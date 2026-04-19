@@ -1,0 +1,19 @@
+export const qk = {
+  health: ['health'] as const,
+  healthReady: ['healthReady'] as const,
+  projects: (offset: number, limit: number) => ['projects', offset, limit] as const,
+  project: (id: string) => ['project', id] as const,
+  sources: (projectId: string, offset: number, limit: number) =>
+    ['sources', projectId, offset, limit] as const,
+  sourceDoc: (id: string) => ['sourceDoc', id] as const,
+  sourceAudio: (id: string) => ['sourceAudio', id] as const,
+  documentChunks: (documentId: string) => ['documentChunks', documentId] as const,
+  entities: (projectId: string, queryKey: string) => ['entities', projectId, queryKey] as const,
+  summary: (projectId: string) => ['summary', projectId] as const,
+  materials: (limit: number) => ['materials', limit] as const,
+  material: (id: string) => ['material', id] as const,
+  insights: (limit: number) => ['insights', limit] as const,
+  dashboardAggregates: ['dashboardAggregates'] as const,
+  projectAggregation: (projectId: string) => ['projectAggregation', projectId] as const,
+  projectReport: (projectId: string) => ['projectReport', projectId] as const,
+};

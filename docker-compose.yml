@@ -1,0 +1,122 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ria
+      POSTGRES_PASSWORD: ria
+      POSTGRES_DB: research_intel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ria -d research_intel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: local
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://ria:ria@postgres:5432/research_intel
+      DATABASE_URL_SYNC: postgresql+psycopg://ria:ria@postgres:5432/research_intel
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      CORS_ORIGINS: "*"
+      UPLOAD_STORAGE_PATH: /data/uploads
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_SEMANTIC_CHUNK_MODEL: ${OPENAI_SEMANTIC_CHUNK_MODEL:-gpt-4o-mini}
+      OPENAI_SEMANTIC_CHUNK_WINDOW_CHARS: ${OPENAI_SEMANTIC_CHUNK_WINDOW_CHARS:-24000}
+      RESEARCH_EXTRACTION_PROVIDER: ${RESEARCH_EXTRACTION_PROVIDER:-gpt}
+      RESEARCH_SUMMARY_PROVIDER: ${RESEARCH_SUMMARY_PROVIDER:-gpt}
+      OPENAI_EXTRACTION_MODEL: ${OPENAI_EXTRACTION_MODEL:-gpt-4o-mini}
+      OPENAI_SUMMARY_MODEL: ${OPENAI_SUMMARY_MODEL:-gpt-4o-mini}
+      RESEARCH_TRANSCRIPTION_PROVIDER: ${RESEARCH_TRANSCRIPTION_PROVIDER:-mock}
+      OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-whisper-1}
+      OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS: ${OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS:-300}
+      RESEARCH_TRANSCRIPTION_FALLBACK_TO_MOCK: ${RESEARCH_TRANSCRIPTION_FALLBACK_TO_MOCK:-false}
+      WHISPER_LOCAL_COMMAND: ${WHISPER_LOCAL_COMMAND:-whisper}
+      WHISPER_LOCAL_MODEL: ${WHISPER_LOCAL_MODEL:-base}
+      WHISPER_LOCAL_TIMEOUT_SECONDS: ${WHISPER_LOCAL_TIMEOUT_SECONDS:-3600}
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    profiles:
+      - web
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api/v1
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+    depends_on:
+      - api
+
+  worker:
+    build: .
+    command: celery -A app.infrastructure.celery_app.celery_app worker --loglevel=info
+    env_file:
+      - .env
+    environment:
+      APP_ENV: local
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://ria:ria@postgres:5432/research_intel
+      DATABASE_URL_SYNC: postgresql+psycopg://ria:ria@postgres:5432/research_intel
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      UPLOAD_STORAGE_PATH: /data/uploads
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_SEMANTIC_CHUNK_MODEL: ${OPENAI_SEMANTIC_CHUNK_MODEL:-gpt-4o-mini}
+      OPENAI_SEMANTIC_CHUNK_WINDOW_CHARS: ${OPENAI_SEMANTIC_CHUNK_WINDOW_CHARS:-24000}
+      RESEARCH_EXTRACTION_PROVIDER: ${RESEARCH_EXTRACTION_PROVIDER:-gpt}
+      RESEARCH_SUMMARY_PROVIDER: ${RESEARCH_SUMMARY_PROVIDER:-gpt}
+      OPENAI_EXTRACTION_MODEL: ${OPENAI_EXTRACTION_MODEL:-gpt-4o-mini}
+      OPENAI_SUMMARY_MODEL: ${OPENAI_SUMMARY_MODEL:-gpt-4o-mini}
+      RESEARCH_TRANSCRIPTION_PROVIDER: ${RESEARCH_TRANSCRIPTION_PROVIDER:-mock}
+      OPENAI_TRANSCRIPTION_MODEL: ${OPENAI_TRANSCRIPTION_MODEL:-whisper-1}
+      OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS: ${OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS:-300}
+      RESEARCH_TRANSCRIPTION_FALLBACK_TO_MOCK: ${RESEARCH_TRANSCRIPTION_FALLBACK_TO_MOCK:-false}
+      WHISPER_LOCAL_COMMAND: ${WHISPER_LOCAL_COMMAND:-whisper}
+      WHISPER_LOCAL_MODEL: ${WHISPER_LOCAL_MODEL:-base}
+      WHISPER_LOCAL_TIMEOUT_SECONDS: ${WHISPER_LOCAL_TIMEOUT_SECONDS:-3600}
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  uploads:
+  web_node_modules:
