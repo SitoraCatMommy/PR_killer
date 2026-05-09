@@ -2,6 +2,7 @@ from uuid import UUID
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.models.text_chunk import TextChunk
 from app.models.transcript import Transcript
@@ -10,6 +11,19 @@ from app.models.transcript import Transcript
 def stmt_chunks_for_document_ordered(source_document_id: UUID):
     return (
         select(TextChunk)
+        .options(
+            load_only(
+                TextChunk.id,
+                TextChunk.project_id,
+                TextChunk.source_document_id,
+                TextChunk.source_audio_id,
+                TextChunk.transcript_id,
+                TextChunk.chunk_index,
+                TextChunk.text,
+                TextChunk.token_count,
+                TextChunk.created_at,
+            )
+        )
         .where(TextChunk.source_document_id == source_document_id)
         .order_by(TextChunk.chunk_index.asc(), TextChunk.id.asc())
     )
@@ -18,6 +32,19 @@ def stmt_chunks_for_document_ordered(source_document_id: UUID):
 def stmt_chunks_for_transcript_ordered(transcript_id: UUID):
     return (
         select(TextChunk)
+        .options(
+            load_only(
+                TextChunk.id,
+                TextChunk.project_id,
+                TextChunk.source_document_id,
+                TextChunk.source_audio_id,
+                TextChunk.transcript_id,
+                TextChunk.chunk_index,
+                TextChunk.text,
+                TextChunk.token_count,
+                TextChunk.created_at,
+            )
+        )
         .where(TextChunk.transcript_id == transcript_id)
         .order_by(TextChunk.chunk_index.asc(), TextChunk.id.asc())
     )
@@ -27,6 +54,19 @@ def stmt_chunks_for_audio_scope_ordered(source_audio_id: UUID):
     t_sub = select(Transcript.id).where(Transcript.source_audio_id == source_audio_id)
     return (
         select(TextChunk)
+        .options(
+            load_only(
+                TextChunk.id,
+                TextChunk.project_id,
+                TextChunk.source_document_id,
+                TextChunk.source_audio_id,
+                TextChunk.transcript_id,
+                TextChunk.chunk_index,
+                TextChunk.text,
+                TextChunk.token_count,
+                TextChunk.created_at,
+            )
+        )
         .where(
             or_(
                 TextChunk.source_audio_id == source_audio_id,

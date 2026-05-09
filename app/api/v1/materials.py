@@ -1,9 +1,10 @@
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
 
-from app.api.deps import MaterialServiceDep
+from app.api.deps import MaterialServiceDep, SettingsDep
+from app.api.upload_utils import read_upload_file_with_limit
 from app.domain.enums import MaterialType
 from app.schemas.common import MessageResponse
 from app.schemas.material import MaterialCreate, MaterialRead
@@ -33,6 +34,7 @@ async def ingest_text(body: MaterialCreate, svc: MaterialServiceDep) -> Material
 @router.post("/audio", response_model=MaterialRead, status_code=status.HTTP_201_CREATED)
 async def ingest_audio(
     svc: MaterialServiceDep,
+    settings: SettingsDep,
     file: UploadFile = File(...),
     title: str | None = Form(default=None),
     source_uri: str | None = Form(default=None),
@@ -47,7 +49,7 @@ async def ingest_audio(
         except json.JSONDecodeError as e:
             raise HTTPException(status_code=400, detail=f"invalid extra_metadata json: {e}") from e
 
-    data = await file.read()
+    data = await read_upload_file_with_limit(file, max_bytes=settings.upload_max_bytes)
     storage_root = Path("/data/uploads")
     material_id, _task_id = await svc.ingest_audio(
         audio_bytes=data,
@@ -65,7 +67,10 @@ async def ingest_audio(
 
 
 @router.get("", response_model=list[MaterialRead])
-async def list_materials(svc: MaterialServiceDep, limit: int = 50) -> list[MaterialRead]:
+async def list_materials(
+    svc: MaterialServiceDep,
+    limit: int = Query(default=50, ge=1, le=100),
+) -> list[MaterialRead]:
     rows = await svc.list_recent(limit=limit)
     return [MaterialRead.model_validate(r) for r in rows]
 

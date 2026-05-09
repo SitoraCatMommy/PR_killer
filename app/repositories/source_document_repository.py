@@ -2,6 +2,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.domain.enums import SourceType
 from app.models.source_document import SourceDocument
@@ -45,8 +46,53 @@ class SourceDocumentRepository:
     async def list_by_project(self, project_id: UUID) -> list[SourceDocument]:
         stmt = (
             select(SourceDocument)
+            .options(
+                load_only(
+                    SourceDocument.id,
+                    SourceDocument.project_id,
+                    SourceDocument.filename,
+                    SourceDocument.mime_type,
+                    SourceDocument.source_type,
+                    SourceDocument.created_at,
+                )
+            )
             .where(SourceDocument.project_id == project_id)
             .order_by(SourceDocument.created_at.desc())
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_by_project_window(
+        self,
+        project_id: UUID,
+        *,
+        offset: int,
+        limit: int,
+    ) -> list[SourceDocument]:
+        stmt = (
+            select(SourceDocument)
+            .options(
+                load_only(
+                    SourceDocument.id,
+                    SourceDocument.project_id,
+                    SourceDocument.filename,
+                    SourceDocument.mime_type,
+                    SourceDocument.source_type,
+                    SourceDocument.created_at,
+                )
+            )
+            .where(SourceDocument.project_id == project_id)
+            .order_by(SourceDocument.created_at.desc(), SourceDocument.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_by_project(self, project_id: UUID) -> int:
+        q = await self._session.scalar(
+            select(func.count())
+            .select_from(SourceDocument)
+            .where(SourceDocument.project_id == project_id)
+        )
+        return int(q or 0)

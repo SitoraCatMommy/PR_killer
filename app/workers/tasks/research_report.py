@@ -143,12 +143,7 @@ def prepare_and_generate_research_report(project_id: str) -> dict[str, Any]:
                     error_code="unexpected_error",
                     error_message=str(e) or type(e).__name__,
                 )
-        return {
-            "status": "error",
-            "code": "unexpected_error",
-            "project_id": project_id,
-            "report_id": str(report_id) if report_id else None,
-        }
+        raise
     logger.info(
         "prepare_and_generate_research_report: report_id=%s project_id=%s",
         row.id,

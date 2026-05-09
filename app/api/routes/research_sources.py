@@ -2,16 +2,21 @@ from uuid import UUID
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
-from app.api.deps import IngestionServiceDep, PaginationDep, ProjectServiceDep, SourceQueryServiceDep
-from app.infrastructure.settings import get_settings
+from app.api.deps import (
+    IngestionServiceDep,
+    PaginationDep,
+    ProjectServiceDep,
+    SettingsDep,
+    SourceQueryServiceDep,
+)
+from app.api.upload_utils import read_upload_file_with_limit
+from app.domain.enums import SourceType
 from app.infrastructure.database import DbSession
+from app.infrastructure.settings import get_settings
 from app.models.source_audio import SourceAudio
 from app.models.source_document import SourceDocument
-from app.schemas.processing import ProcessingTaskQueued
-from app.workers.tasks.research_extraction import extract_entities_for_document
-from app.workers.tasks.research_processing import chunk_source_document, transcribe_audio_source
-from app.domain.enums import SourceType
 from app.schemas.common import ErrorResponse
+from app.schemas.processing import ProcessingTaskQueued
 from app.schemas.research_chunk import TextChunkRead
 from app.schemas.research_source import (
     RawTextNoteCreate,
@@ -21,6 +26,8 @@ from app.schemas.research_source import (
     SourceDocumentRead,
     UnifiedSourcesResponse,
 )
+from app.workers.tasks.research_extraction import extract_entities_for_document
+from app.workers.tasks.research_processing import chunk_source_document, transcribe_audio_source
 
 router_nested = APIRouter(
     prefix="/projects/{project_id}/sources",
@@ -46,12 +53,13 @@ async def upload_text_source(
     project_id: UUID,
     ingestion: IngestionServiceDep,
     projects: ProjectServiceDep,
+    settings: SettingsDep,
     file: UploadFile = File(...),
     source_type: SourceType = Form(default=SourceType.UPLOAD),
 ) -> SourceDocumentRead:
     if await projects.get(project_id) is None:
         raise _project_404()
-    data = await file.read()
+    data = await read_upload_file_with_limit(file, max_bytes=settings.upload_max_bytes)
     try:
         doc = await ingestion.upload_text_file(
             project_id,
@@ -76,13 +84,14 @@ async def upload_audio_source(
     project_id: UUID,
     ingestion: IngestionServiceDep,
     projects: ProjectServiceDep,
+    settings: SettingsDep,
     file: UploadFile = File(...),
     language: str | None = Form(default=None),
     source_type: SourceType = Form(default=SourceType.UPLOAD),
 ) -> SourceAudioRead:
     if await projects.get(project_id) is None:
         raise _project_404()
-    data = await file.read()
+    data = await read_upload_file_with_limit(file, max_bytes=settings.upload_max_bytes)
     try:
         audio = await ingestion.upload_audio_file(
             project_id,
