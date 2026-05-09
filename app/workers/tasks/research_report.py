@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from uuid import UUID
 
 from app.infrastructure.celery_app import celery_app
@@ -12,8 +13,10 @@ from app.services.research_report_generation_service import ResearchReportGenera
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="app.workers.tasks.research_report.generate_research_report")
-def generate_research_report(project_id: str) -> dict:
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.workers.tasks.research_report.generate_research_report"
+)
+def generate_research_report(project_id: str) -> dict[str, Any]:
     """Generate report only. Prefer ``prepare_and_generate_research_report``."""
     pid = UUID(project_id)
     svc = ResearchReportGenerationService()
@@ -35,8 +38,10 @@ def generate_research_report(project_id: str) -> dict:
     return {"status": "ok", "project_id": project_id, "report_id": str(row.id)}
 
 
-@celery_app.task(name="app.workers.tasks.research_report.prepare_and_generate_research_report")
-def prepare_and_generate_research_report(project_id: str) -> dict:
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.workers.tasks.research_report.prepare_and_generate_research_report"
+)
+def prepare_and_generate_research_report(project_id: str) -> dict[str, Any]:
     """Chunk/extract (gaps) + aggregate, then structured PR report."""
     pid = UUID(project_id)
     settings = get_settings()

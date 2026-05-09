@@ -230,7 +230,8 @@ def _normalize_external_articles_list(raw: Any, fallback: list[dict[str, Any]]) 
 
 def _brief_entity(e: ExtractedEntity) -> dict[str, Any]:
     ev = e.evidence_json if isinstance(e.evidence_json, dict) else {}
-    q = ev.get("quote") if isinstance(ev.get("quote"), str) else ""
+    raw_quote = ev.get("quote")
+    q = raw_quote if isinstance(raw_quote, str) else ""
     return {
         "id": str(e.id),
         "type": e.entity_type.value,
@@ -282,7 +283,8 @@ def _quotes_from_entities(entities: list[ExtractedEntity], limit: int = 40) -> l
         if e.entity_type not in PR_SYNTHESIS_ENTITY_TYPES:
             continue
         ev = e.evidence_json if isinstance(e.evidence_json, dict) else {}
-        q = ev.get("quote") if isinstance(ev.get("quote"), str) else ""
+        raw_quote = ev.get("quote")
+        q = raw_quote if isinstance(raw_quote, str) else ""
         q = q.strip()
         if len(q) < 12 or is_trivial_quote(q):
             continue
@@ -1229,7 +1231,7 @@ class ResearchReportGenerationService:
         validation_errors: list[str] = []
         for attempt in range(max_attempts):
             try:
-                completion = client.chat.completions.create(
+                completion = client.chat.completions.create(  # type: ignore[call-overload]
                     model=self._settings.openai_report_model,
                     messages=messages,
                     response_format={"type": "json_object"},

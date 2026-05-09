@@ -52,7 +52,8 @@ def detect_dominant_report_language(samples: list[str]) -> str:
 def _entity_text_sample(e: ExtractedEntity) -> str:
     parts = [e.title or "", e.content or ""]
     ev = e.evidence_json if isinstance(e.evidence_json, dict) else {}
-    q = ev.get("quote") if isinstance(ev.get("quote"), str) else ""
+    raw_quote = ev.get("quote")
+    q = raw_quote if isinstance(raw_quote, str) else ""
     if q:
         parts.append(q)
     return " ".join(parts)
@@ -162,7 +163,8 @@ def _evidence_quotes(entities: list[ExtractedEntity], limit: int = 16) -> list[d
         if e.entity_type not in PR_SYNTHESIS_ENTITY_TYPES:
             continue
         ev = e.evidence_json if isinstance(e.evidence_json, dict) else {}
-        q = ev.get("quote") if isinstance(ev.get("quote"), str) else ""
+        raw_quote = ev.get("quote")
+        q = raw_quote if isinstance(raw_quote, str) else ""
         q = q.strip()
         if len(q) < 12 or is_trivial_quote(q):
             continue
