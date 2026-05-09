@@ -1,5 +1,6 @@
 import { apiJson, buildQuery } from './client';
 import type {
+  BulkUploadResponse,
   DashboardAggregateRead,
   EntityListResponse,
   EntityType,
@@ -73,6 +74,20 @@ export async function uploadTextSource(
   });
 }
 
+export async function uploadTextSources(
+  projectId: string,
+  files: File[],
+  sourceType: SourceType = 'upload',
+): Promise<BulkUploadResponse> {
+  const fd = new FormData();
+  files.forEach((file) => fd.append('files', file));
+  fd.append('source_type', sourceType);
+  return apiJson<BulkUploadResponse>(`/projects/${projectId}/sources/text/upload/bulk`, {
+    method: 'POST',
+    body: fd,
+  });
+}
+
 export async function uploadAudioSource(
   projectId: string,
   file: File,
@@ -83,6 +98,21 @@ export async function uploadAudioSource(
   if (options?.language) fd.append('language', options.language);
   fd.append('source_type', options?.sourceType ?? 'upload');
   return apiJson<SourceAudioRead>(`/projects/${projectId}/sources/audio/upload`, {
+    method: 'POST',
+    body: fd,
+  });
+}
+
+export async function uploadAudioSources(
+  projectId: string,
+  files: File[],
+  options?: { language?: string; sourceType?: SourceType },
+): Promise<BulkUploadResponse> {
+  const fd = new FormData();
+  files.forEach((file) => fd.append('files', file));
+  if (options?.language) fd.append('language', options.language);
+  fd.append('source_type', options?.sourceType ?? 'upload');
+  return apiJson<BulkUploadResponse>(`/projects/${projectId}/sources/audio/upload/bulk`, {
     method: 'POST',
     body: fd,
   });
@@ -286,6 +316,21 @@ export async function ingestMaterialAudio(
   if (options?.source_uri != null) fd.append('source_uri', options.source_uri);
   if (options?.extra_metadata != null) fd.append('extra_metadata', options.extra_metadata);
   return apiJson<MaterialRead>('/materials/audio', {
+    method: 'POST',
+    body: fd,
+  });
+}
+
+export async function ingestMaterialAudios(
+  files: File[],
+  options?: { title?: string; source_uri?: string; extra_metadata?: string },
+): Promise<BulkUploadResponse> {
+  const fd = new FormData();
+  files.forEach((file) => fd.append('files', file));
+  if (options?.title != null) fd.append('title', options.title);
+  if (options?.source_uri != null) fd.append('source_uri', options.source_uri);
+  if (options?.extra_metadata != null) fd.append('extra_metadata', options.extra_metadata);
+  return apiJson<BulkUploadResponse>('/materials/audio/bulk', {
     method: 'POST',
     body: fd,
   });

@@ -122,6 +122,9 @@ export const ru = {
     saveNote: 'Сохранить заметку',
     savingNote: 'Сохраняем…',
     uploadOk: 'Файл сохранён. Список обновится автоматически.',
+    uploadOkCount: (ok: number) => `Сохранено файлов: ${ok}. Список обновится автоматически.`,
+    uploadPartial: (ok: number, failed: number) =>
+      `Сохранено файлов: ${ok}; не удалось загрузить: ${failed}. Проверьте ограничения размера и повторите ошибки.`,
     advanced: 'Дополнительно: тип источника',
     advancedHint: 'Нужно редко — для учёта происхождения данных.',
     sourceTypeLabel: 'Тип источника для загрузок',
@@ -338,9 +341,12 @@ export const ru = {
     textField: 'Текст',
     send: 'Отправить',
     sending: 'Отправляем…',
-    chooseAudio: 'Выбрать аудиофайл',
+    chooseAudio: 'Выбрать аудиофайлы',
     recent: 'Недавние материалы',
     uploaded: 'Файл принят.',
+    bulkUploaded: (ok: number) => `Принято файлов: ${ok}. Каждый файл поставлен в очередь обработки.`,
+    bulkUploadedPartial: (ok: number, failed: number) =>
+      `Принято файлов: ${ok}; не удалось загрузить: ${failed}. Успешные файлы поставлены в очередь.`,
     typeText: 'текст',
     typeAudio: 'аудио',
   },

@@ -1,8 +1,9 @@
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.models.source_audio import SourceAudio
 
@@ -45,8 +46,53 @@ class SourceAudioRepository:
     async def list_by_project(self, project_id: UUID) -> list[SourceAudio]:
         stmt = (
             select(SourceAudio)
+            .options(
+                load_only(
+                    SourceAudio.id,
+                    SourceAudio.project_id,
+                    SourceAudio.filename,
+                    SourceAudio.mime_type,
+                    SourceAudio.language,
+                    SourceAudio.created_at,
+                )
+            )
             .where(SourceAudio.project_id == project_id)
             .order_by(SourceAudio.created_at.desc())
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_by_project_window(
+        self,
+        project_id: UUID,
+        *,
+        offset: int,
+        limit: int,
+    ) -> list[SourceAudio]:
+        stmt = (
+            select(SourceAudio)
+            .options(
+                load_only(
+                    SourceAudio.id,
+                    SourceAudio.project_id,
+                    SourceAudio.filename,
+                    SourceAudio.mime_type,
+                    SourceAudio.language,
+                    SourceAudio.created_at,
+                )
+            )
+            .where(SourceAudio.project_id == project_id)
+            .order_by(SourceAudio.created_at.desc(), SourceAudio.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def count_by_project(self, project_id: UUID) -> int:
+        q = await self._session.scalar(
+            select(func.count())
+            .select_from(SourceAudio)
+            .where(SourceAudio.project_id == project_id)
+        )
+        return int(q or 0)

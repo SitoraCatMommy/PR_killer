@@ -1,7 +1,11 @@
 from uuid import UUID
 
+from sqlalchemy import literal, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.enums import SourceType
+from app.models.source_audio import SourceAudio
+from app.models.source_document import SourceDocument
 from app.repositories.project_repository import ProjectRepository
 from app.repositories.research_entity_repository import ExtractedEntityRepository
 from app.repositories.source_audio_repository import SourceAudioRepository
@@ -9,6 +13,7 @@ from app.repositories.source_document_repository import SourceDocumentRepository
 from app.repositories.text_chunk_repository import TextChunkRepository
 from app.repositories.transcript_repository import TranscriptRepository
 from app.schemas.pagination import PaginatedMeta
+from app.schemas.research_chunk import TextChunkRead
 from app.schemas.research_source import (
     AudioSourceListItem,
     DocumentSourceListItem,
@@ -18,8 +23,54 @@ from app.schemas.research_source import (
     SourceDocumentRead,
     UnifiedSourcesResponse,
 )
-from app.schemas.research_chunk import TextChunkRead
 from app.schemas.research_transcript import TranscriptRead, TranscriptSegmentRead
+
+
+def stmt_unified_sources_page(project_id: UUID, *, offset: int, limit: int):
+    docs = (
+        select(
+            literal("document").label("source_kind"),
+            SourceDocument.id.label("id"),
+            SourceDocument.project_id.label("project_id"),
+            SourceDocument.filename.label("filename"),
+            SourceDocument.mime_type.label("mime_type"),
+            SourceDocument.source_type.label("source_type"),
+            literal(None).label("language"),
+            SourceDocument.created_at.label("created_at"),
+        )
+        .where(SourceDocument.project_id == project_id)
+    )
+    audios = (
+        select(
+            literal("audio").label("source_kind"),
+            SourceAudio.id.label("id"),
+            SourceAudio.project_id.label("project_id"),
+            SourceAudio.filename.label("filename"),
+            SourceAudio.mime_type.label("mime_type"),
+            literal(None).label("source_type"),
+            SourceAudio.language.label("language"),
+            SourceAudio.created_at.label("created_at"),
+        )
+        .where(SourceAudio.project_id == project_id)
+    )
+    sources = union_all(docs, audios).subquery()
+    return (
+        select(sources)
+        .order_by(sources.c.created_at.desc(), sources.c.id.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+
+
+def _coerce_source_type(value: object) -> SourceType:
+    if isinstance(value, SourceType):
+        return value
+    if isinstance(value, str):
+        try:
+            return SourceType(value)
+        except ValueError:
+            return SourceType[value]
+    raise TypeError(f"Unexpected source_type value: {value!r}")
 
 
 class SourceQueryService:
@@ -41,39 +92,40 @@ class SourceQueryService:
     ) -> UnifiedSourcesResponse:
         if not await self._projects.exists(project_id):
             raise ValueError("project_not_found")
-        docs = await self._documents.list_by_project(project_id)
-        audios = await self._audios.list_by_project(project_id)
+        rows_result = await self._session.execute(
+            stmt_unified_sources_page(project_id, offset=offset, limit=limit)
+        )
+        doc_total = await self._documents.count_by_project(project_id)
+        audio_total = await self._audios.count_by_project(project_id)
         merged: list[DocumentSourceListItem | AudioSourceListItem] = []
-        for d in docs:
-            merged.append(
-                DocumentSourceListItem(
-                    source_kind="document",
-                    id=d.id,
-                    project_id=d.project_id,
-                    filename=d.filename,
-                    mime_type=d.mime_type,
-                    source_type=d.source_type,
-                    created_at=d.created_at,
+        for row in rows_result.mappings():
+            if row["source_kind"] == "document":
+                merged.append(
+                    DocumentSourceListItem(
+                        source_kind="document",
+                        id=row["id"],
+                        project_id=row["project_id"],
+                        filename=row["filename"],
+                        mime_type=row["mime_type"],
+                        source_type=_coerce_source_type(row["source_type"]),
+                        created_at=row["created_at"],
+                    )
                 )
-            )
-        for a in audios:
-            merged.append(
-                AudioSourceListItem(
-                    source_kind="audio",
-                    id=a.id,
-                    project_id=a.project_id,
-                    filename=a.filename,
-                    mime_type=a.mime_type,
-                    language=a.language,
-                    created_at=a.created_at,
+            else:
+                merged.append(
+                    AudioSourceListItem(
+                        source_kind="audio",
+                        id=row["id"],
+                        project_id=row["project_id"],
+                        filename=row["filename"],
+                        mime_type=row["mime_type"],
+                        language=row["language"],
+                        created_at=row["created_at"],
+                    )
                 )
-            )
-        merged.sort(key=lambda x: x.created_at, reverse=True)
-        total = len(merged)
-        page = merged[offset : offset + limit]
         return UnifiedSourcesResponse(
-            items=page,
-            meta=PaginatedMeta(total=total, limit=limit, offset=offset),
+            items=merged,
+            meta=PaginatedMeta(total=doc_total + audio_total, limit=limit, offset=offset),
         )
 
     async def get_document_detail(self, document_id: UUID) -> SourceDocumentDetailRead | None:
@@ -113,7 +165,10 @@ class SourceQueryService:
             tr_read = None
         seg_count = await self._transcripts.count_segments(tr.id) if tr else 0
         seg_sample = (
-            [TranscriptSegmentRead.model_validate(s) for s in await self._transcripts.list_segments_preview(tr.id)]
+            [
+                TranscriptSegmentRead.model_validate(s)
+                for s in await self._transcripts.list_segments_preview(tr.id)
+            ]
             if tr
             else []
         )

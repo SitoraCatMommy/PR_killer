@@ -29,6 +29,20 @@ class Settings(BaseSettings):
         alias="UPLOAD_STORAGE_PATH",
         description="Root directory for LocalFileStorage (bind-mounted in Docker).",
     )
+    upload_max_bytes: int = Field(
+        default=100 * 1024 * 1024,
+        ge=1,
+        le=1024 * 1024 * 1024,
+        alias="UPLOAD_MAX_BYTES",
+        description="Maximum accepted request upload size for source/material files.",
+    )
+    upload_max_files: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+        alias="UPLOAD_MAX_FILES",
+        description="Maximum number of files accepted by a single bulk upload request.",
+    )
 
     database_url: str = Field(
         default="postgresql+asyncpg://ria:ria@localhost:5432/research_intel",
@@ -250,6 +264,11 @@ class Settings(BaseSettings):
         if self.cors_origins.strip() == "*":
             return ["*"]
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def cors_allow_credentials(self) -> bool:
+        return self.cors_origins.strip() != "*"
 
 
 @lru_cache

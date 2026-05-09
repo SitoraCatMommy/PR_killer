@@ -1,10 +1,12 @@
+import asyncio
 import uuid
 from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import MaterialType, ProcessingStatus
+from app.domain.enums import ProcessingStatus
+from app.infrastructure.storage.local import safe_upload_filename
 from app.repositories.material_repository import MaterialRepository
 from app.services.pipeline_dispatcher import MaterialPipelineDispatcher
 
@@ -32,7 +34,9 @@ class MaterialService:
             extra_metadata=extra_metadata,
         )
         await self._session.commit()
-        task_id = MaterialPipelineDispatcher.enqueue_material_pipeline(m.id) if enqueue_pipeline else None
+        task_id = (
+            MaterialPipelineDispatcher.enqueue_material_pipeline(m.id) if enqueue_pipeline else None
+        )
         return m.id, task_id
 
     async def ingest_audio(
@@ -47,10 +51,10 @@ class MaterialService:
         storage_dir: Path,
         enqueue_pipeline: bool = True,
     ) -> tuple[UUID, str | None]:
-        storage_dir.mkdir(parents=True, exist_ok=True)
-        key = f"{uuid.uuid4()}_{filename or 'audio.bin'}"
+        await asyncio.to_thread(storage_dir.mkdir, parents=True, exist_ok=True)
+        key = f"{uuid.uuid4()}_{safe_upload_filename(filename, default='audio.bin')}"
         path = storage_dir / key
-        path.write_bytes(audio_bytes)
+        await asyncio.to_thread(path.write_bytes, audio_bytes)
         m = await self._materials.create_audio_placeholder(
             audio_storage_key=str(path),
             title=title,
@@ -59,7 +63,9 @@ class MaterialService:
             extra_metadata=extra_metadata,
         )
         await self._session.commit()
-        task_id = MaterialPipelineDispatcher.enqueue_material_pipeline(m.id) if enqueue_pipeline else None
+        task_id = (
+            MaterialPipelineDispatcher.enqueue_material_pipeline(m.id) if enqueue_pipeline else None
+        )
         return m.id, task_id
 
     async def get(self, material_id: UUID):

@@ -140,6 +140,23 @@ export type DashboardAggregateRead = Schemas['DashboardAggregateRead'];
 export type MessageResponse = Schemas['MessageResponse'];
 export type SourceType = Schemas['SourceType'];
 
+export type BulkUploadItemResult = {
+  filename: string;
+  status: 'ok' | 'error' | string;
+  id?: string | null;
+  source_kind?: string | null;
+  task_id?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+};
+
+export type BulkUploadResponse = {
+  total: number;
+  succeeded: number;
+  failed: number;
+  items: BulkUploadItemResult[];
+};
+
 /** Celery queue response (may be absent from older OpenAPI snapshots). */
 export type ProcessingTaskQueued = {
   task_id: string;
