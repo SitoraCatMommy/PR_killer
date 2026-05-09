@@ -158,6 +158,41 @@ def _aggregation_exists(session: Session, project_id: UUID) -> bool:
     return int(q or 0) > 0
 
 
+def build_pr_readiness_decision(
+    *,
+    processable_count: int,
+    chunk_count: int,
+    pr_entity_count: int,
+    min_pr_entity_count: int,
+    needs_chunking_count: int,
+    needs_extraction_count: int,
+    low_signal_source_count: int,
+    aggregation_exists: bool,
+) -> dict[str, Any]:
+    """Pure readiness decision so tests can cover PR flow gating without a database."""
+    blocking_reasons: list[str] = []
+    warnings: list[str] = []
+    if processable_count == 0:
+        blocking_reasons.append("no_processable_sources")
+    if processable_count > 0 and chunk_count == 0:
+        blocking_reasons.append("no_chunks")
+    if chunk_count > 0 and pr_entity_count < min_pr_entity_count:
+        blocking_reasons.append("low_pr_signal")
+    if needs_chunking_count:
+        warnings.append("sources_need_chunking")
+    if needs_extraction_count:
+        warnings.append("sources_need_extraction")
+    if low_signal_source_count:
+        warnings.append("sources_have_only_low_signal_entities")
+    if pr_entity_count >= min_pr_entity_count and not aggregation_exists:
+        warnings.append("aggregation_missing")
+    return {
+        "ready_for_report": not blocking_reasons,
+        "blocking_reasons": blocking_reasons,
+        "warnings": warnings,
+    }
+
+
 def _latest_completed_transcript(session: Session, source_audio_id: UUID) -> Transcript | None:
     tr = session.scalar(
         select(Transcript)
@@ -304,31 +339,22 @@ class ResearchPipelineOrchestratorService:
         supporting_fact_count = _count_project_supporting_facts(session, project_id)
         has_aggregation = _aggregation_exists(session, project_id)
 
-        blocking_reasons: list[str] = []
-        warnings: list[str] = []
-        if processable_count == 0:
-            blocking_reasons.append("no_processable_sources")
-        if processable_count > 0 and chunk_count == 0:
-            blocking_reasons.append("no_chunks")
-        if chunk_count > 0 and pr_entity_count < self._settings.pr_report_min_synthesis_entities:
-            blocking_reasons.append("low_pr_signal")
-        if needs_chunking_count:
-            warnings.append("sources_need_chunking")
-        if needs_extraction_count:
-            warnings.append("sources_need_extraction")
-        if low_signal_source_count:
-            warnings.append("sources_have_only_low_signal_entities")
-        if (
-            pr_entity_count >= self._settings.pr_report_min_synthesis_entities
-            and not has_aggregation
-        ):
-            warnings.append("aggregation_missing")
+        decision = build_pr_readiness_decision(
+            processable_count=processable_count,
+            chunk_count=chunk_count,
+            pr_entity_count=pr_entity_count,
+            min_pr_entity_count=self._settings.pr_report_min_synthesis_entities,
+            needs_chunking_count=needs_chunking_count,
+            needs_extraction_count=needs_extraction_count,
+            low_signal_source_count=low_signal_source_count,
+            aggregation_exists=has_aggregation,
+        )
 
         return {
             "project_found": True,
-            "ready_for_report": not blocking_reasons,
-            "blocking_reasons": blocking_reasons,
-            "warnings": warnings,
+            "ready_for_report": decision["ready_for_report"],
+            "blocking_reasons": decision["blocking_reasons"],
+            "warnings": decision["warnings"],
             "source_count": source_count,
             "processable_document_count": processable_document_count,
             "completed_transcript_audio_count": completed_transcript_audio_count,
