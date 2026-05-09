@@ -1,5 +1,7 @@
 """Build compact synthesis input for PR research reports (smart analysis layer)."""
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import re
@@ -10,8 +12,8 @@ from uuid import UUID
 from app.domain.enums import EntityType
 from app.domain.pr_workspace import PR_SYNTHESIS_ENTITY_TYPES
 from app.models.extracted_entity import ExtractedEntity
-from app.utils.quote_filters import is_trivial_quote
 from app.models.project import Project
+from app.utils.quote_filters import is_trivial_quote
 
 # Minimal RU stopwords for frequency (not linguistic perfection — product signal).
 _RU_STOP = frozenset(
@@ -50,7 +52,8 @@ def detect_dominant_report_language(samples: list[str]) -> str:
 def _entity_text_sample(e: ExtractedEntity) -> str:
     parts = [e.title or "", e.content or ""]
     ev = e.evidence_json if isinstance(e.evidence_json, dict) else {}
-    q = ev.get("quote") if isinstance(ev.get("quote"), str) else ""
+    raw_quote = ev.get("quote")
+    q = raw_quote if isinstance(raw_quote, str) else ""
     if q:
         parts.append(q)
     return " ".join(parts)
@@ -65,7 +68,7 @@ def _collect_language_samples(entities: list[ExtractedEntity]) -> list[str]:
     return out
 
 
-def _recurring_patterns(entities: list[ExtractedEntity], limit: int = 14) -> list[dict[str, Any]]:
+def _recurring_patterns(entities: list[ExtractedEntity], limit: int = 10) -> list[dict[str, Any]]:
     buckets: dict[str, list[UUID]] = {}
     for e in entities:
         if e.entity_type not in PR_SYNTHESIS_ENTITY_TYPES:
@@ -107,7 +110,7 @@ def _titles_by_types(entities: list[ExtractedEntity], types: set[EntityType], li
     return out
 
 
-def _key_signals(entities: list[ExtractedEntity], limit: int = 18) -> list[str]:
+def _key_signals(entities: list[ExtractedEntity], limit: int = 12) -> list[str]:
     """Short PR-oriented signal lines from high-signal units (no raw chunk bodies)."""
     priority_types = (
         EntityType.TRUST_ISSUE,
@@ -153,14 +156,15 @@ def _key_signals(entities: list[ExtractedEntity], limit: int = 18) -> list[str]:
     return out
 
 
-def _evidence_quotes(entities: list[ExtractedEntity], limit: int = 36) -> list[dict[str, str]]:
+def _evidence_quotes(entities: list[ExtractedEntity], limit: int = 16) -> list[dict[str, str]]:
     seen: set[str] = set()
     rows: list[dict[str, str]] = []
     for e in entities:
         if e.entity_type not in PR_SYNTHESIS_ENTITY_TYPES:
             continue
         ev = e.evidence_json if isinstance(e.evidence_json, dict) else {}
-        q = ev.get("quote") if isinstance(ev.get("quote"), str) else ""
+        raw_quote = ev.get("quote")
+        q = raw_quote if isinstance(raw_quote, str) else ""
         q = q.strip()
         if len(q) < 12 or is_trivial_quote(q):
             continue
@@ -171,7 +175,7 @@ def _evidence_quotes(entities: list[ExtractedEntity], limit: int = 36) -> list[d
         st = "interview" if e.entity_type in PR_SYNTHESIS_ENTITY_TYPES else "note"
         rows.append(
             {
-                "quote": q[:480],
+                "quote": q[:280],
                 "source_type": st,
                 "entity_id": str(e.id),
             }
@@ -223,7 +227,7 @@ def build_word_frequency_analysis(corpus: str, report_language: str) -> dict[str
     words = _tokenize_words(corpus)
     filtered = [w for w in words if w not in _RU_STOP and len(w) > 2]
     freq = Counter(filtered)
-    top = dict(freq.most_common(45))
+    top = dict(freq.most_common(20))
     buckets: dict[str, Counter[str]] = {
         "trust": Counter(),
         "risk": Counter(),
@@ -286,7 +290,7 @@ def build_word_frequency_analysis(corpus: str, report_language: str) -> dict[str
 
     return {
         "word_frequency": top,
-        "themed_buckets": {k: dict(v.most_common(12)) for k, v in buckets.items()},
+        "themed_buckets": {k: dict(v.most_common(6)) for k, v in buckets.items()},
         "pr_interpretation": interp,
         "dominant_lexicon_pr_perception": dominant_lexicon_pr_perception,
         "risk_signal_strength": strength,
@@ -325,8 +329,23 @@ def _external_research_seeds(project: Project, recurring: list[dict[str, Any]], 
             continue
         seen.add(k)
         out.append(s)
-        if len(out) >= 14:
+        if len(out) >= 8:
             break
+    return out
+
+
+def _compact_snapshot_for_report(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Keep dashboard context useful but small for the final PR prompt."""
+    if not isinstance(snapshot, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("totals", "entity_type_distribution", "confidence_distribution"):
+        value = snapshot.get(key)
+        if isinstance(value, dict):
+            out[key] = value
+    top = snapshot.get("top_recurring_insights")
+    if isinstance(top, list):
+        out["top_recurring_insights"] = top[:8]
     return out
 
 
@@ -342,7 +361,7 @@ def build_smart_report_input(
     report_language = detect_dominant_report_language(lang_samples)
 
     corpus_parts: list[str] = []
-    for e in canonical_entities[:200]:
+    for e in canonical_entities[:120]:
         corpus_parts.append(_entity_text_sample(e))
     corpus = "\n".join(corpus_parts)
     word_block = build_word_frequency_analysis(corpus, report_language)
@@ -352,9 +371,9 @@ def build_smart_report_input(
     trust_types = {EntityType.TRUST_ISSUE, EntityType.SENTIMENT_SIGNAL}
     risk_types = {EntityType.RISK, EntityType.TRUST_ISSUE}
 
-    audience = _titles_by_types(canonical_entities, audience_types, 12)
-    trust_signals = _titles_by_types(canonical_entities, trust_types, 10)
-    pr_risks = _titles_by_types(canonical_entities, risk_types, 12)
+    audience = _titles_by_types(canonical_entities, audience_types, 8)
+    trust_signals = _titles_by_types(canonical_entities, trust_types, 6)
+    pr_risks = _titles_by_types(canonical_entities, risk_types, 8)
 
     topics: list[str] = []
     seen_t: set[str] = set()
@@ -369,7 +388,7 @@ def build_smart_report_input(
             if tt.lower() not in seen_t:
                 seen_t.add(tt.lower())
                 topics.append(tt)
-        if len(topics) >= 16:
+        if len(topics) >= 10:
             break
 
     return {
@@ -398,5 +417,5 @@ def build_smart_report_input(
             "trust_vs_risk_balance": word_block["trust_vs_risk_balance"],
         },
         "external_research_seeds": _external_research_seeds(project, recurring, report_language),
-        "aggregation_snapshot": aggregation_snapshot,
+        "aggregation_snapshot": _compact_snapshot_for_report(aggregation_snapshot),
     }

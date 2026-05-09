@@ -8,6 +8,7 @@ import type {
   MaterialCreate,
   MaterialRead,
   MessageResponse,
+  PRAnalysisReadiness,
   ProcessingTaskQueued,
   ProjectCreate,
   ProjectListResponse,
@@ -227,6 +228,12 @@ export async function getProjectReport(
   projectId: string,
 ): Promise<ResearchReportEnvelope> {
   return apiJson<ResearchReportEnvelope>(`/projects/${projectId}/report`);
+}
+
+export async function getPRAnalysisReadiness(
+  projectId: string,
+): Promise<PRAnalysisReadiness> {
+  return apiJson<PRAnalysisReadiness>(`/projects/${projectId}/pr-analysis/readiness`);
 }
 
 export async function queueGenerateResearchReport(

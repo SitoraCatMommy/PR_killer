@@ -5,16 +5,21 @@ from fastapi import APIRouter, HTTPException, Response, status
 from app.api.deps import PaginationDep, ProjectServiceDep
 from app.infrastructure.database import DbSession
 from app.models.project import Project
+from app.repositories.aggregation_snapshot_repository import AggregationSnapshotRepository
+from app.repositories.research_report_repository import ResearchReportRepository
 from app.schemas.common import ErrorResponse
 from app.schemas.processing import ProcessingTaskQueued
-from app.repositories.aggregation_snapshot_repository import AggregationSnapshotRepository
 from app.schemas.research_aggregation import (
     ResearchAggregationSnapshotRead,
     ResearchAggregationSnapshotResponse,
 )
 from app.schemas.research_project import ProjectCreate, ProjectListResponse, ProjectRead
-from app.repositories.research_report_repository import ResearchReportRepository
-from app.schemas.research_report import ResearchReportEnvelope, ResearchReportRead
+from app.schemas.research_report import (
+    PRAnalysisReadiness,
+    ResearchReportEnvelope,
+    ResearchReportRead,
+)
+from app.services.research_pipeline_orchestrator_service import ResearchPipelineOrchestratorService
 from app.workers.tasks.research_aggregate import aggregate_project, generate_project_summary
 from app.workers.tasks.research_report import prepare_and_generate_research_report
 
@@ -148,12 +153,38 @@ async def get_project_report(project_id: UUID, session: DbSession) -> ResearchRe
     return ResearchReportEnvelope(report=ResearchReportRead.model_validate(row))
 
 
+@router.get(
+    "/{project_id}/pr-analysis/readiness",
+    response_model=PRAnalysisReadiness,
+    responses={404: {"model": ErrorResponse}},
+)
+async def get_project_pr_analysis_readiness(
+    project_id: UUID,
+    session: DbSession,
+) -> PRAnalysisReadiness:
+    if await session.get(Project, project_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "project_not_found", "message": "Project not found"},
+        )
+    # The sync readiness inspector only issues short SELECTs. Running it through the
+    # sync facade keeps Celery and API readiness semantics aligned.
+    service = ResearchPipelineOrchestratorService()
+    readiness = await session.run_sync(
+        lambda sync_session: service.inspect_project_pr_readiness_sync(sync_session, project_id)
+    )
+    return PRAnalysisReadiness.model_validate(readiness)
+
+
 @router.post(
     "/{project_id}/report/generate",
     response_model=ProcessingTaskQueued,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def queue_generate_research_report(project_id: UUID, session: DbSession) -> ProcessingTaskQueued:
+async def queue_generate_research_report(
+    project_id: UUID,
+    session: DbSession,
+) -> ProcessingTaskQueued:
     if await session.get(Project, project_id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -184,16 +215,16 @@ async def queue_smart_research_report(project_id: UUID, session: DbSession) -> P
     response_model=ProcessingTaskQueued,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def queue_regenerate_research_report(project_id: UUID, session: DbSession) -> ProcessingTaskQueued:
-    """Удаляет все сохранённые отчёты по проекту и ставит в очередь новую генерацию."""
+async def queue_regenerate_research_report(
+    project_id: UUID,
+    session: DbSession,
+) -> ProcessingTaskQueued:
+    """Ставит в очередь новую генерацию, не удаляя предыдущий готовый отчёт заранее."""
     if await session.get(Project, project_id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "project_not_found", "message": "Project not found"},
         )
-    repo = ResearchReportRepository(session)
-    await repo.delete_all_for_project(project_id)
-    await session.commit()
     task = prepare_and_generate_research_report.delay(str(project_id))
     return ProcessingTaskQueued(task_id=str(task.id), status="queued")
 

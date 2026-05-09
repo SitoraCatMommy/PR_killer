@@ -62,7 +62,9 @@ class Settings(BaseSettings):
     research_transcription_fallback_to_mock: bool = Field(
         default=False,
         alias="RESEARCH_TRANSCRIPTION_FALLBACK_TO_MOCK",
-        description="If true, on provider failure return mock text instead of failing the Celery task.",
+        description=(
+            "If true, on provider failure return mock text instead of failing the Celery task."
+        ),
     )
     transcription_api_url: str | None = Field(default=None, alias="TRANSCRIPTION_API_URL")
     transcription_api_key: str | None = Field(default=None, alias="TRANSCRIPTION_API_KEY")
@@ -82,7 +84,10 @@ class Settings(BaseSettings):
     whisper_local_command: str = Field(
         default="whisper",
         alias="WHISPER_LOCAL_COMMAND",
-        description="Executable for RESEARCH_TRANSCRIPTION_PROVIDER=whisper_local (openai-whisper CLI).",
+        description=(
+            "Executable for RESEARCH_TRANSCRIPTION_PROVIDER=whisper_local "
+            "(openai-whisper CLI)."
+        ),
     )
     whisper_local_model: str = Field(
         default="base",
@@ -98,12 +103,18 @@ class Settings(BaseSettings):
     research_extraction_provider: Literal["mock", "gpt"] = Field(
         default="gpt",
         alias="RESEARCH_EXTRACTION_PROVIDER",
-        description="Entity extraction: `mock` rules, `gpt` OpenAI (falls back to mock if no API key).",
+        description=(
+            "Entity extraction: `mock` rules, `gpt` OpenAI "
+            "(falls back to mock if no API key)."
+        ),
     )
     research_summary_provider: Literal["deterministic", "gpt"] = Field(
         default="gpt",
         alias="RESEARCH_SUMMARY_PROVIDER",
-        description="Summary: `deterministic` buckets entities; `gpt` synthesizes via OpenAI (falls back if no key).",
+        description=(
+            "Summary: `deterministic` buckets entities; `gpt` synthesizes via OpenAI "
+            "(falls back if no key)."
+        ),
     )
 
     chunk_max_chars: int = Field(
@@ -151,11 +162,54 @@ class Settings(BaseSettings):
         alias="RESEARCH_REPORT_BRAND_NAME",
         description="Brand name for PR report framing (never substitute in LLM prompts).",
     )
+    pr_report_min_synthesis_entities: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        alias="PR_REPORT_MIN_SYNTHESIS_ENTITIES",
+        description=(
+            "Minimum PR-synthesis entities required before spending tokens on report generation."
+        ),
+    )
+    pr_report_max_auto_extract_chunks: int = Field(
+        default=40,
+        ge=0,
+        le=10000,
+        alias="PR_REPORT_MAX_AUTO_EXTRACT_CHUNKS",
+        description=(
+            "Maximum chunks the report job may auto-extract before blocking for explicit prep."
+        ),
+    )
+    pr_report_auto_prepare: bool = Field(
+        default=True,
+        alias="PR_REPORT_AUTO_PREPARE",
+        description=(
+            "If true, report jobs may perform bounded chunk/extract/aggregate prep "
+            "before generation."
+        ),
+    )
+    pr_report_max_prompt_chars: int = Field(
+        default=45000,
+        ge=8000,
+        le=118000,
+        alias="PR_REPORT_MAX_PROMPT_CHARS",
+        description="Maximum JSON payload characters sent to the PR report model.",
+    )
+    pr_report_max_repair_attempts: int = Field(
+        default=1,
+        ge=0,
+        le=3,
+        alias="PR_REPORT_MAX_REPAIR_ATTEMPTS",
+        description="Maximum compact repair calls after an invalid PR report model response.",
+    )
 
     external_research_provider: Literal["mock", "http"] = Field(
         default="mock",
         alias="EXTERNAL_RESEARCH_PROVIDER",
-        description="External literature: `mock` placeholders, `http` POST to EXTERNAL_RESEARCH_API_URL.",
+        description=(
+            "External literature: `mock` placeholders, `http` POST to "
+            "EXTERNAL_RESEARCH_API_URL."
+        ),
     )
     external_research_api_url: str | None = Field(default=None, alias="EXTERNAL_RESEARCH_API_URL")
     external_research_api_key: str | None = Field(default=None, alias="EXTERNAL_RESEARCH_API_KEY")
