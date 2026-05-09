@@ -5,15 +5,15 @@ from fastapi import APIRouter, HTTPException, Response, status
 from app.api.deps import PaginationDep, ProjectServiceDep
 from app.infrastructure.database import DbSession
 from app.models.project import Project
+from app.repositories.aggregation_snapshot_repository import AggregationSnapshotRepository
+from app.repositories.research_report_repository import ResearchReportRepository
 from app.schemas.common import ErrorResponse
 from app.schemas.processing import ProcessingTaskQueued
-from app.repositories.aggregation_snapshot_repository import AggregationSnapshotRepository
 from app.schemas.research_aggregation import (
     ResearchAggregationSnapshotRead,
     ResearchAggregationSnapshotResponse,
 )
 from app.schemas.research_project import ProjectCreate, ProjectListResponse, ProjectRead
-from app.repositories.research_report_repository import ResearchReportRepository
 from app.schemas.research_report import (
     PRAnalysisReadiness,
     ResearchReportEnvelope,
@@ -169,11 +169,9 @@ async def get_project_pr_analysis_readiness(
         )
     # The sync readiness inspector only issues short SELECTs. Running it through the
     # sync facade keeps Celery and API readiness semantics aligned.
+    service = ResearchPipelineOrchestratorService()
     readiness = await session.run_sync(
-        lambda sync_session: ResearchPipelineOrchestratorService().inspect_project_pr_readiness_sync(
-            sync_session,
-            project_id,
-        )
+        lambda sync_session: service.inspect_project_pr_readiness_sync(sync_session, project_id)
     )
     return PRAnalysisReadiness.model_validate(readiness)
 
@@ -183,7 +181,10 @@ async def get_project_pr_analysis_readiness(
     response_model=ProcessingTaskQueued,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def queue_generate_research_report(project_id: UUID, session: DbSession) -> ProcessingTaskQueued:
+async def queue_generate_research_report(
+    project_id: UUID,
+    session: DbSession,
+) -> ProcessingTaskQueued:
     if await session.get(Project, project_id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -214,7 +215,10 @@ async def queue_smart_research_report(project_id: UUID, session: DbSession) -> P
     response_model=ProcessingTaskQueued,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def queue_regenerate_research_report(project_id: UUID, session: DbSession) -> ProcessingTaskQueued:
+async def queue_regenerate_research_report(
+    project_id: UUID,
+    session: DbSession,
+) -> ProcessingTaskQueued:
     """Ставит в очередь новую генерацию, не удаляя предыдущий готовый отчёт заранее."""
     if await session.get(Project, project_id) is None:
         raise HTTPException(

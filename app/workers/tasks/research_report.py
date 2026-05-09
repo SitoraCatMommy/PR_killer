@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 @celery_app.task(name="app.workers.tasks.research_report.generate_research_report")
 def generate_research_report(project_id: str) -> dict:
-    """Generate report only (no auto chunk/extract/aggregate). Prefer ``prepare_and_generate_research_report``."""
+    """Generate report only. Prefer ``prepare_and_generate_research_report``."""
     pid = UUID(project_id)
     svc = ResearchReportGenerationService()
     try:
@@ -25,7 +25,10 @@ def generate_research_report(project_id: str) -> dict:
             logger.warning("generate_research_report: project missing %s", project_id)
             return {"status": "missing", "project_id": project_id}
         if str(e) == "openai_api_key_required_for_research_report":
-            logger.error("generate_research_report: OPENAI_API_KEY not set for project %s", project_id)
+            logger.error(
+                "generate_research_report: OPENAI_API_KEY not set for project %s",
+                project_id,
+            )
             return {"status": "error", "code": "openai_required", "project_id": project_id}
         raise
     logger.info("generate_research_report: report_id=%s project_id=%s", row.id, project_id)
@@ -54,12 +57,16 @@ def prepare_and_generate_research_report(project_id: str) -> dict:
                 auto_prepare=settings.pr_report_auto_prepare,
             )
             if prep.get("blocked"):
-                code = str((prep.get("blocking_reasons") or ["preparation_blocked"])[0])
+                code = str(
+                    (prep.get("blocking_reasons") or ["preparation_blocked"])[0]
+                )
                 svc.mark_report_failed_sync(
                     session,
                     report_id,
                     error_code=code,
-                    error_message="PR analysis preparation was blocked to avoid excessive token usage.",
+                    error_message=(
+                        "PR analysis preparation was blocked to avoid excessive token usage."
+                    ),
                     extra={"prep": prep},
                 )
                 return {
@@ -70,7 +77,9 @@ def prepare_and_generate_research_report(project_id: str) -> dict:
                 }
             readiness = pipe.inspect_project_pr_readiness_sync(session, pid)
             if not readiness.get("ready_for_report"):
-                code = str((readiness.get("blocking_reasons") or ["not_ready_for_report"])[0])
+                code = str(
+                    (readiness.get("blocking_reasons") or ["not_ready_for_report"])[0]
+                )
                 svc.mark_report_failed_sync(
                     session,
                     report_id,

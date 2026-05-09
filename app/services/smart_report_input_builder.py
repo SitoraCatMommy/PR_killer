@@ -1,5 +1,7 @@
 """Build compact synthesis input for PR research reports (smart analysis layer)."""
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import re
@@ -10,8 +12,8 @@ from uuid import UUID
 from app.domain.enums import EntityType
 from app.domain.pr_workspace import PR_SYNTHESIS_ENTITY_TYPES
 from app.models.extracted_entity import ExtractedEntity
-from app.utils.quote_filters import is_trivial_quote
 from app.models.project import Project
+from app.utils.quote_filters import is_trivial_quote
 
 # Minimal RU stopwords for frequency (not linguistic perfection — product signal).
 _RU_STOP = frozenset(

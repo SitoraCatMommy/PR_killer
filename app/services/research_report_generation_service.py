@@ -1,5 +1,7 @@
 """Build `ResearchReport` from canonical units + aggregation + external research (OpenAI JSON)."""
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import json
@@ -467,14 +469,14 @@ def _collect_strings_for_pr_validation(data: dict[str, Any]) -> str:
     for sec in _ANALYTICAL_SECTION_KEYS:
         for item in _as_list(data.get(sec)):
             if isinstance(item, dict):
-                for kk, vv in item.items():
+                for vv in item.values():
                     if isinstance(vv, str) and vv.strip():
                         chunks.append(vv)
             elif isinstance(item, str) and item.strip():
                 chunks.append(item)
     for it in _as_list(data.get("next_steps")):
         if isinstance(it, dict):
-            for kk, vv in it.items():
+            for vv in it.values():
                 if isinstance(vv, str) and vv.strip():
                     chunks.append(vv)
         elif isinstance(it, str) and it.strip():

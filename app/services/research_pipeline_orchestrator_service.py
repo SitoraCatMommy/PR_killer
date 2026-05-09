@@ -21,8 +21,8 @@ from app.models.source_document import SourceDocument
 from app.models.text_chunk import TextChunk
 from app.models.transcript import Transcript
 from app.services.processing_orchestrator_service import ProcessingOrchestratorService
-from app.services.research_project_aggregation_service import ResearchAggregationService
 from app.services.research_extraction_service import ExtractionService
+from app.services.research_project_aggregation_service import ResearchAggregationService
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,9 @@ _PR_ENTITY_TYPES = tuple(PR_SYNTHESIS_ENTITY_TYPES)
 
 def _count_document_chunks(session: Session, source_document_id: UUID) -> int:
     q = session.scalar(
-        select(func.count()).select_from(TextChunk).where(TextChunk.source_document_id == source_document_id)
+        select(func.count())
+        .select_from(TextChunk)
+        .where(TextChunk.source_document_id == source_document_id)
     )
     return int(q or 0)
 
@@ -112,7 +114,9 @@ def _count_project_chunks(session: Session, project_id: UUID) -> int:
 
 def _count_project_entities(session: Session, project_id: UUID) -> int:
     q = session.scalar(
-        select(func.count()).select_from(ExtractedEntity).where(ExtractedEntity.project_id == project_id)
+        select(func.count())
+        .select_from(ExtractedEntity)
+        .where(ExtractedEntity.project_id == project_id)
     )
     return int(q or 0)
 
@@ -182,7 +186,11 @@ class ResearchPipelineOrchestratorService:
             self._extraction = ExtractionService()
         return self._extraction
 
-    def inspect_project_pr_readiness_sync(self, session: Session, project_id: UUID) -> dict[str, Any]:
+    def inspect_project_pr_readiness_sync(
+        self,
+        session: Session,
+        project_id: UUID,
+    ) -> dict[str, Any]:
         """Read-only PR analysis readiness diagnostics for UI and report gating."""
         project = session.get(Project, project_id)
         if project is None:
@@ -213,10 +221,14 @@ class ResearchPipelineOrchestratorService:
         low_signal_source_count = 0
 
         documents = session.scalars(
-            select(SourceDocument).where(SourceDocument.project_id == project_id).order_by(SourceDocument.created_at)
+            select(SourceDocument)
+            .where(SourceDocument.project_id == project_id)
+            .order_by(SourceDocument.created_at)
         ).all()
         audios = session.scalars(
-            select(SourceAudio).where(SourceAudio.project_id == project_id).order_by(SourceAudio.created_at)
+            select(SourceAudio)
+            .where(SourceAudio.project_id == project_id)
+            .order_by(SourceAudio.created_at)
         ).all()
 
         for doc in documents:
@@ -306,7 +318,10 @@ class ResearchPipelineOrchestratorService:
             warnings.append("sources_need_extraction")
         if low_signal_source_count:
             warnings.append("sources_have_only_low_signal_entities")
-        if pr_entity_count >= self._settings.pr_report_min_synthesis_entities and not has_aggregation:
+        if (
+            pr_entity_count >= self._settings.pr_report_min_synthesis_entities
+            and not has_aggregation
+        ):
             warnings.append("aggregation_missing")
 
         return {
@@ -355,13 +370,18 @@ class ResearchPipelineOrchestratorService:
             return out
 
         # First do cheap deterministic chunking so extraction cost can be estimated accurately.
-        for doc in session.scalars(select(SourceDocument).where(SourceDocument.project_id == project_id)).all():
+        document_stmt = select(SourceDocument).where(SourceDocument.project_id == project_id)
+        for doc in session.scalars(document_stmt).all():
             raw = (doc.raw_text or "").strip()
             entry: dict[str, Any] = {"source_document_id": str(doc.id), "skipped": not bool(raw)}
             if raw:
                 n_chunks = _count_document_chunks(session, doc.id)
                 if n_chunks == 0:
-                    n_chunks = self._processing.chunk_source_document_sync(session, doc.id, strategy="fixed")
+                    n_chunks = self._processing.chunk_source_document_sync(
+                        session,
+                        doc.id,
+                        strategy="fixed",
+                    )
                     session.flush()
                     entry["chunked"] = True
                 else:
@@ -371,7 +391,8 @@ class ResearchPipelineOrchestratorService:
                 entry["pr_entities_existing"] = _count_document_pr_entities(session, doc.id)
             out["documents"].append(entry)
 
-        for audio in session.scalars(select(SourceAudio).where(SourceAudio.project_id == project_id)).all():
+        audio_stmt = select(SourceAudio).where(SourceAudio.project_id == project_id)
+        for audio in session.scalars(audio_stmt).all():
             entry: dict[str, Any] = {"source_audio_id": str(audio.id)}
             tr = _latest_completed_transcript(session, audio.id)
             if tr is None:
@@ -407,7 +428,8 @@ class ResearchPipelineOrchestratorService:
             out["blocked"] = True
             out["blocking_reasons"].append("auto_extract_chunk_cap_exceeded")
             logger.warning(
-                "prepare_project_for_pr_report_sync blocked project_id=%s chunks_to_extract=%s cap=%s",
+                "prepare_project_for_pr_report_sync blocked project_id=%s "
+                "chunks_to_extract=%s cap=%s",
                 project_id,
                 chunks_to_extract,
                 max_auto_extract_chunks,
@@ -452,11 +474,16 @@ class ResearchPipelineOrchestratorService:
         )
         return out
 
-    def ensure_project_sources_pipeline_sync(self, session: Session, project_id: UUID) -> dict[str, Any]:
+    def ensure_project_sources_pipeline_sync(
+        self,
+        session: Session,
+        project_id: UUID,
+    ) -> dict[str, Any]:
         """Chunk (if needed) and extract (if no entities) for every text/audio source with data."""
         out: dict[str, Any] = {"documents": [], "audios": []}
 
-        for doc in session.scalars(select(SourceDocument).where(SourceDocument.project_id == project_id)).all():
+        document_stmt = select(SourceDocument).where(SourceDocument.project_id == project_id)
+        for doc in session.scalars(document_stmt).all():
             raw = (doc.raw_text or "").strip()
             entry: dict[str, Any] = {"source_document_id": str(doc.id), "skipped": not bool(raw)}
             if not raw:
@@ -465,7 +492,11 @@ class ResearchPipelineOrchestratorService:
 
             n_chunks = _count_document_chunks(session, doc.id)
             if n_chunks == 0:
-                n_chunks = self._processing.chunk_source_document_sync(session, doc.id, strategy="fixed")
+                n_chunks = self._processing.chunk_source_document_sync(
+                    session,
+                    doc.id,
+                    strategy="fixed",
+                )
                 session.flush()
                 entry["chunked"] = True
                 entry["chunk_count"] = n_chunks
@@ -485,7 +516,8 @@ class ResearchPipelineOrchestratorService:
 
             out["documents"].append(entry)
 
-        for audio in session.scalars(select(SourceAudio).where(SourceAudio.project_id == project_id)).all():
+        audio_stmt = select(SourceAudio).where(SourceAudio.project_id == project_id)
+        for audio in session.scalars(audio_stmt).all():
             entry: dict[str, Any] = {"source_audio_id": str(audio.id)}
             tr = _latest_completed_transcript(session, audio.id)
             if tr is None:
@@ -516,10 +548,18 @@ class ResearchPipelineOrchestratorService:
 
             out["audios"].append(entry)
 
-        logger.info("ensure_project_sources_pipeline_sync project_id=%s summary=%s", project_id, _prep_summary(out))
+        logger.info(
+            "ensure_project_sources_pipeline_sync project_id=%s summary=%s",
+            project_id,
+            _prep_summary(out),
+        )
         return out
 
-    def ensure_project_ready_for_report_sync(self, session: Session, project_id: UUID) -> dict[str, Any]:
+    def ensure_project_ready_for_report_sync(
+        self,
+        session: Session,
+        project_id: UUID,
+    ) -> dict[str, Any]:
         """Prepare sources, refresh aggregation snapshot, then caller may generate report."""
         prep = self.ensure_project_sources_pipeline_sync(session, project_id)
         self._aggregation.aggregate_project_sync(session, project_id)
@@ -535,7 +575,17 @@ class ResearchPipelineOrchestratorService:
 def _prep_summary(prep: dict[str, Any]) -> dict[str, int]:
     docs = prep.get("documents") or []
     auds = prep.get("audios") or []
-    chunked = sum(1 for x in docs if x.get("chunked")) + sum(1 for x in auds if x.get("chunked"))
-    extracted = sum(1 for x in docs if x.get("extracted")) + sum(1 for x in auds if x.get("extracted"))
+    chunked = sum(1 for x in docs if x.get("chunked")) + sum(
+        1 for x in auds if x.get("chunked")
+    )
+    extracted = sum(1 for x in docs if x.get("extracted")) + sum(
+        1 for x in auds if x.get("extracted")
+    )
     skipped = sum(1 for x in auds if x.get("skipped"))
-    return {"documents": len(docs), "audios": len(auds), "chunked": chunked, "extracted": extracted, "audios_skipped": skipped}
+    return {
+        "documents": len(docs),
+        "audios": len(auds),
+        "chunked": chunked,
+        "extracted": extracted,
+        "audios_skipped": skipped,
+    }
