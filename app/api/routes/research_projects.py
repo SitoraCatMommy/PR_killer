@@ -14,7 +14,12 @@ from app.schemas.research_aggregation import (
 )
 from app.schemas.research_project import ProjectCreate, ProjectListResponse, ProjectRead
 from app.repositories.research_report_repository import ResearchReportRepository
-from app.schemas.research_report import ResearchReportEnvelope, ResearchReportRead
+from app.schemas.research_report import (
+    PRAnalysisReadiness,
+    ResearchReportEnvelope,
+    ResearchReportRead,
+)
+from app.services.research_pipeline_orchestrator_service import ResearchPipelineOrchestratorService
 from app.workers.tasks.research_aggregate import aggregate_project, generate_project_summary
 from app.workers.tasks.research_report import prepare_and_generate_research_report
 
@@ -146,6 +151,31 @@ async def get_project_report(project_id: UUID, session: DbSession) -> ResearchRe
     if row is None:
         return ResearchReportEnvelope(report=None)
     return ResearchReportEnvelope(report=ResearchReportRead.model_validate(row))
+
+
+@router.get(
+    "/{project_id}/pr-analysis/readiness",
+    response_model=PRAnalysisReadiness,
+    responses={404: {"model": ErrorResponse}},
+)
+async def get_project_pr_analysis_readiness(
+    project_id: UUID,
+    session: DbSession,
+) -> PRAnalysisReadiness:
+    if await session.get(Project, project_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "project_not_found", "message": "Project not found"},
+        )
+    # The sync readiness inspector only issues short SELECTs. Running it through the
+    # sync facade keeps Celery and API readiness semantics aligned.
+    readiness = await session.run_sync(
+        lambda sync_session: ResearchPipelineOrchestratorService().inspect_project_pr_readiness_sync(
+            sync_session,
+            project_id,
+        )
+    )
+    return PRAnalysisReadiness.model_validate(readiness)
 
 
 @router.post(

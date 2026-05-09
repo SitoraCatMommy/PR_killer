@@ -33,3 +33,36 @@ class ResearchReportRead(BaseModel):
 
 class ResearchReportEnvelope(BaseModel):
     report: ResearchReportRead | None = None
+
+
+class PRAnalysisReadinessSource(BaseModel):
+    source_kind: str
+    source_id: UUID
+    title: str | None = None
+    processable: bool
+    chunk_count: int
+    entity_count: int
+    pr_entity_count: int
+    needs_chunking: bool
+    needs_extraction: bool
+    low_signal: bool
+    reason: str | None = None
+
+
+class PRAnalysisReadiness(BaseModel):
+    ready_for_report: bool
+    blocking_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    source_count: int
+    processable_document_count: int
+    completed_transcript_audio_count: int
+    chunk_count: int
+    entity_count: int
+    pr_entity_count: int
+    supporting_fact_count: int
+    needs_chunking_count: int
+    needs_extraction_count: int
+    low_signal_source_count: int
+    aggregation_exists: bool
+    min_pr_entity_count: int
+    sources: list[PRAnalysisReadinessSource] = Field(default_factory=list)
