@@ -215,15 +215,12 @@ async def queue_smart_research_report(project_id: UUID, session: DbSession) -> P
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def queue_regenerate_research_report(project_id: UUID, session: DbSession) -> ProcessingTaskQueued:
-    """Удаляет все сохранённые отчёты по проекту и ставит в очередь новую генерацию."""
+    """Ставит в очередь новую генерацию, не удаляя предыдущий готовый отчёт заранее."""
     if await session.get(Project, project_id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "project_not_found", "message": "Project not found"},
         )
-    repo = ResearchReportRepository(session)
-    await repo.delete_all_for_project(project_id)
-    await session.commit()
     task = prepare_and_generate_research_report.delay(str(project_id))
     return ProcessingTaskQueued(task_id=str(task.id), status="queued")
 

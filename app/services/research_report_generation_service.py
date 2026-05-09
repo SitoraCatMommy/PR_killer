@@ -28,12 +28,12 @@ from app.utils.quote_filters import is_trivial_quote
 
 logger = logging.getLogger(__name__)
 
-_MAX_CANONICAL_LOAD = 500
-_MAX_UNITS_IN_PROMPT = 120
+_MAX_CANONICAL_LOAD = 300
+_MAX_UNITS_IN_PROMPT = 60
 _MAX_UNIT_CHARS = 420
 _MAX_QUOTE_CHARS = 320
 _MAX_SNAPSHOT_JSON_CHARS = 14_000
-_MAX_USER_JSON_CHARS = 118_000
+_DEFAULT_MAX_USER_JSON_CHARS = 45_000
 
 # Sections whose items should carry analytical sub-fields + display "text" for API/UI.
 _ANALYTICAL_SECTION_KEYS = (
@@ -306,6 +306,13 @@ def _select_prompt_entities(canonicals: list[ExtractedEntity]) -> list[Extracted
     return ordered[:_MAX_UNITS_IN_PROMPT]
 
 
+def _select_synthesis_entities(canonicals: list[ExtractedEntity]) -> list[ExtractedEntity]:
+    pr_entities = [e for e in canonicals if e.entity_type in PR_SYNTHESIS_ENTITY_TYPES]
+    if pr_entities:
+        return pr_entities
+    return [e for e in canonicals if e.entity_type != EntityType.SUPPORTING_FACT][:40]
+
+
 def _group_by_type(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -328,6 +335,72 @@ def _trim_json_value(payload: dict[str, Any], max_chars: int) -> dict[str, Any]:
         "aggregation_keys": list(payload.keys())[:40],
         "aggregation_excerpt": raw[:max_chars],
     }
+
+
+def _compact_aggregation_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    if not payload:
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("totals", "entity_type_distribution", "confidence_distribution"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            out[key] = value
+    top = payload.get("top_recurring_insights")
+    if isinstance(top, list):
+        out["top_recurring_insights"] = top[:8]
+    return out
+
+
+def _bounded_user_payload_json(payload: dict[str, Any], *, max_chars: int) -> str:
+    """Deterministically trim lower-priority report input before final safety truncation."""
+    working = dict(payload)
+    raw = json.dumps(working, ensure_ascii=False)
+    if len(raw) <= max_chars:
+        return raw
+
+    synthesis = working.get("synthesis_input")
+    if isinstance(synthesis, dict):
+        synthesis = dict(synthesis)
+        working["synthesis_input"] = synthesis
+        if isinstance(synthesis.get("aggregation_snapshot"), dict):
+            synthesis["aggregation_snapshot"] = _compact_aggregation_snapshot(
+                synthesis["aggregation_snapshot"]
+            )
+        for key, keep in (
+            ("evidence_quotes", 10),
+            ("key_signals", 10),
+            ("recurring_patterns", 8),
+            ("top_topics", 8),
+            ("external_research_seeds", 6),
+        ):
+            value = synthesis.get(key)
+            if isinstance(value, list):
+                synthesis[key] = value[:keep]
+        wf = synthesis.get("word_frequency_block")
+        if isinstance(wf, dict):
+            wf = dict(wf)
+            synthesis["word_frequency_block"] = wf
+            freq = wf.get("word_frequency")
+            if isinstance(freq, dict):
+                wf["word_frequency"] = dict(list(freq.items())[:20])
+            buckets = wf.get("themed_buckets")
+            if isinstance(buckets, dict):
+                wf["themed_buckets"] = {
+                    str(k): dict(list(v.items())[:6]) if isinstance(v, dict) else v
+                    for k, v in buckets.items()
+                }
+
+    entity_index = working.get("canonical_entity_index")
+    if isinstance(entity_index, list):
+        working["canonical_entity_index"] = entity_index[:40]
+    draft_external = working.get("draft_external_articles")
+    if isinstance(draft_external, list):
+        working["draft_external_articles"] = draft_external[:6]
+
+    raw = json.dumps(working, ensure_ascii=False)
+    if len(raw) <= max_chars:
+        return raw
+    return raw[: max_chars - 1] + "…"
 
 
 def _load_snapshot(session: Session, project_id: UUID) -> dict[str, Any]:
@@ -444,43 +517,56 @@ def _collect_strings_for_pr_validation(data: dict[str, Any]) -> str:
     return "\n".join(chunks)
 
 
-def _report_data_fails_pr_validation(data: dict[str, Any], *, report_language: str) -> bool:
-    """True — нужна перегенерация: продукт/UX-язык, английский в инсайтах или неверный формат рекомендаций."""
+def _report_data_validation_errors(data: dict[str, Any], *, report_language: str) -> list[str]:
+    """Compact validation errors used for cheap repair prompts."""
+    errors: list[str] = []
     blob = _collect_strings_for_pr_validation(data)
     if _PRODUCT_ADVICE_RE.search(blob):
-        return True
+        errors.append("product_or_ux_language_present")
     if report_language == "ru":
         scrubbed = _strip_urls_and_uuid_tokens(blob)
         if _FORBIDDEN_ENGLISH_IN_OUTPUT_RE.search(scrubbed):
-            return True
+            errors.append("english_terms_present_in_russian_report")
     recs = _as_list(data.get("recommendations"))
     if recs:
         for item in recs:
             if not isinstance(item, dict):
-                return True
+                errors.append("recommendation_item_is_not_object")
+                break
             for fk in _RECOMMENDATION_FIVE_KEYS:
                 if len(str(item.get(fk, "") or "").strip()) < 10:
-                    return True
+                    errors.append(f"recommendation_missing_{fk}")
+                    break
     if report_language == "ru":
         es = str(data.get("executive_summary") or "").strip()
         if len(es) < 40 and _as_list(data.get("key_findings")):
-            return True
+            errors.append("executive_summary_too_short")
         for tp in _normalize_talking_points(data.get("talking_points")):
             if len(tp.split()) > 22:
-                return True
+                errors.append("talking_point_too_long")
+                break
         if _as_list(data.get("key_findings")):
             if len(_normalize_talking_points(data.get("talking_points"))) < 2:
-                return True
+                errors.append("not_enough_talking_points")
             if not _normalize_pr_bullet_list(data.get("reputational_risks")):
-                return True
+                errors.append("missing_reputational_risks")
             if not _normalize_pr_bullet_list(data.get("communication_gaps")):
-                return True
+                errors.append("missing_communication_gaps")
             if not _normalize_pr_bullet_list(data.get("next_steps_pr")):
-                return True
-    return False
+                errors.append("missing_next_steps_pr")
+    return list(dict.fromkeys(errors))
 
 
-def _regeneration_user_hint(brand_name: str, report_language: str) -> str:
+def _report_data_fails_pr_validation(data: dict[str, Any], *, report_language: str) -> bool:
+    """True — нужна перегенерация: продукт/UX-язык, английский в инсайтах или неверный формат рекомендаций."""
+    return bool(_report_data_validation_errors(data, report_language=report_language))
+
+
+def _regeneration_user_hint(
+    brand_name: str,
+    report_language: str,
+    validation_errors: list[str] | None = None,
+) -> str:
     lang_tail = (
         "Все инсайты и выводы — только на русском, без английских слов в тексте (ключи JSON можно латиницей)."
         if report_language == "ru"
@@ -489,6 +575,7 @@ def _regeneration_user_hint(brand_name: str, report_language: str) -> str:
     )
     return (
         "ВАЛИДАЦИЯ НЕ ПРОЙДЕНА. Перегенерируй весь JSON целиком.\n"
+        f"Ошибки проверки: {', '.join(validation_errors or ['unknown'])}.\n"
         f"Контекст: финтех, бренд «{brand_name}». НИКОГДА не подменяй и не выдумывай название бренда; при сомнении пиши «приложение {brand_name}».\n"
         "Запрещено: любые продуктовые и UX-решения (функции, экраны, оптимизация приложения, вовлечённость, партнёрская сеть продукта и т.д.).\n"
         "Только PR: восприятие, доверие, коммуникация, репутация, барьеры восприятия.\n"
@@ -946,7 +1033,82 @@ class ResearchReportGenerationService:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
 
-    def generate_for_project_sync(self, session: Session, project_id: UUID) -> ResearchReport:
+    def create_generating_report_sync(
+        self,
+        session: Session,
+        project_id: UUID,
+        *,
+        stage: str = "preparing",
+    ) -> ResearchReport:
+        project = session.get(Project, project_id)
+        if project is None:
+            raise ValueError("project_not_found")
+        rep = ResearchReport(
+            project_id=project_id,
+            status=ReportStatus.GENERATING,
+            title=project.name,
+            description=None,
+            executive_summary="",
+            report_extras_json={"stage": stage},
+        )
+        session.add(rep)
+        session.flush()
+        return rep
+
+    def mark_report_stage_sync(
+        self,
+        session: Session,
+        report_id: UUID,
+        *,
+        stage: str,
+        extra: dict[str, Any] | None = None,
+    ) -> ResearchReport | None:
+        rep = session.get(ResearchReport, report_id)
+        if rep is None:
+            return None
+        extras = dict(rep.report_extras_json or {})
+        extras["stage"] = stage
+        if extra:
+            extras.update(extra)
+        rep.status = ReportStatus.GENERATING
+        rep.report_extras_json = extras
+        session.flush()
+        return rep
+
+    def mark_report_failed_sync(
+        self,
+        session: Session,
+        report_id: UUID,
+        *,
+        error_code: str,
+        error_message: str,
+        extra: dict[str, Any] | None = None,
+    ) -> ResearchReport | None:
+        rep = session.get(ResearchReport, report_id)
+        if rep is None:
+            return None
+        extras = dict(rep.report_extras_json or {})
+        extras.update(
+            {
+                "stage": "failed",
+                "error_code": error_code,
+                "error_message": error_message[:1000],
+            }
+        )
+        if extra:
+            extras.update(extra)
+        rep.status = ReportStatus.FAILED
+        rep.report_extras_json = extras
+        session.flush()
+        return rep
+
+    def generate_for_project_sync(
+        self,
+        session: Session,
+        project_id: UUID,
+        *,
+        report_id: UUID | None = None,
+    ) -> ResearchReport:
         project = session.get(Project, project_id)
         if project is None:
             raise ValueError("project_not_found")
@@ -967,16 +1129,17 @@ class ResearchReportGenerationService:
             ).all()
         )
 
-        selected = _select_prompt_entities(canonicals)
-        recurring = _recurring_themes(canonicals)
-        quote_pool = _quotes_from_entities(canonicals)
+        synthesis_entities = _select_synthesis_entities(canonicals)
+        selected = _select_prompt_entities(synthesis_entities)
+        recurring = _recurring_themes(synthesis_entities)
+        quote_pool = _quotes_from_entities(synthesis_entities)
         snapshot = _load_snapshot(session, project_id)
         snapshot_trimmed = _trim_json_value(snapshot, _MAX_SNAPSHOT_JSON_CHARS)
 
         brand = (self._settings.research_report_brand_name or "Click").strip() or "Click"
         synthesis_input = build_smart_report_input(
             project=project,
-            canonical_entities=canonicals,
+            canonical_entities=synthesis_entities,
             aggregation_snapshot=snapshot_trimmed,
             brand_name=brand,
         )
@@ -992,15 +1155,24 @@ class ResearchReportGenerationService:
             language=report_language,
         )
 
-        rep = ResearchReport(
-            project_id=project_id,
-            status=ReportStatus.GENERATING,
-            title=project.name,
-            description=None,
-            executive_summary="",
-            report_extras_json={},
-        )
-        session.add(rep)
+        if report_id is not None:
+            rep = session.get(ResearchReport, report_id)
+            if rep is None:
+                raise ValueError("report_not_found")
+            rep.status = ReportStatus.GENERATING
+            rep.title = project.name
+            rep.executive_summary = rep.executive_summary or ""
+            rep.report_extras_json = {**dict(rep.report_extras_json or {}), "stage": "generating_report"}
+        else:
+            rep = ResearchReport(
+                project_id=project_id,
+                status=ReportStatus.GENERATING,
+                title=project.name,
+                description=None,
+                executive_summary="",
+                report_extras_json={"stage": "generating_report"},
+            )
+            session.add(rep)
         session.flush()
 
         logger.info(
@@ -1011,7 +1183,7 @@ class ResearchReportGenerationService:
             report_language,
             brand,
             ext.__class__.__name__,
-            len(canonicals),
+            len(synthesis_entities),
             len(selected),
             len(synthesis_input.get("recurring_patterns") or []),
             len(synthesis_input.get("evidence_quotes") or []),
@@ -1038,9 +1210,10 @@ class ResearchReportGenerationService:
             "synthesis_input": synthesis_input,
             "canonical_entity_index": entity_index,
             "draft_external_articles": draft_articles,
-            "unit_counts_by_type": _type_counts(canonicals),
+            "unit_counts_by_type": _type_counts(synthesis_entities),
         }
-        user = json.dumps(user_payload, ensure_ascii=False)[:_MAX_USER_JSON_CHARS]
+        prompt_limit = self._settings.pr_report_max_prompt_chars or _DEFAULT_MAX_USER_JSON_CHARS
+        user = _bounded_user_payload_json(user_payload, max_chars=prompt_limit)
 
         client = OpenAI(api_key=key, timeout=180.0)
         system_prompt = _build_report_system(brand, report_language)
@@ -1050,7 +1223,9 @@ class ResearchReportGenerationService:
         ]
         data: dict[str, Any] = {}
         last_raw: str | None = None
-        for attempt in range(3):
+        max_attempts = 1 + self._settings.pr_report_max_repair_attempts
+        validation_errors: list[str] = []
+        for attempt in range(max_attempts):
             try:
                 completion = client.chat.completions.create(
                     model=self._settings.openai_report_model,
@@ -1077,23 +1252,22 @@ class ResearchReportGenerationService:
                 session.flush()
                 raise RuntimeError(f"invalid_report_json: {e}") from e
 
-            if not _report_data_fails_pr_validation(data, report_language=report_language):
+            validation_errors = _report_data_validation_errors(data, report_language=report_language)
+            if not validation_errors:
                 break
             logger.warning(
                 "ResearchReport PR/English validation failed project_id=%s report_language=%s attempt=%s/%s",
                 project_id,
                 report_language,
                 attempt + 1,
-                3,
+                max_attempts,
             )
-            messages.append(
-                {"role": "assistant", "content": (raw[:24000] + "…") if len(raw) > 24000 else raw}
-            )
-            messages.append({"role": "user", "content": _regeneration_user_hint(brand, report_language)})
+            messages.append({"role": "user", "content": _regeneration_user_hint(brand, report_language, validation_errors)})
         else:
             logger.warning(
-                "ResearchReport PR validation still failing after retries project_id=%s draft_prefix=%r",
+                "ResearchReport PR validation still failing after retries project_id=%s errors=%s draft_prefix=%r",
                 project_id,
+                validation_errors,
                 (last_raw or "")[:400],
             )
 

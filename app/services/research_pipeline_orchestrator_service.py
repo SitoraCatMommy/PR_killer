@@ -173,8 +173,14 @@ class ResearchPipelineOrchestratorService:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
         self._processing = ProcessingOrchestratorService(self._settings)
-        self._extraction = ExtractionService()
+        self._extraction: ExtractionService | None = None
         self._aggregation = ResearchAggregationService()
+
+    @property
+    def _extraction_service(self) -> ExtractionService:
+        if self._extraction is None:
+            self._extraction = ExtractionService()
+        return self._extraction
 
     def inspect_project_pr_readiness_sync(self, session: Session, project_id: UUID) -> dict[str, Any]:
         """Read-only PR analysis readiness diagnostics for UI and report gating."""
@@ -233,7 +239,7 @@ class ResearchPipelineOrchestratorService:
                 {
                     "source_kind": "document",
                     "source_id": str(doc.id),
-                    "title": doc.title or doc.filename,
+                    "title": doc.filename,
                     "processable": has_text,
                     "chunk_count": chunks,
                     "entity_count": entities,
@@ -266,7 +272,7 @@ class ResearchPipelineOrchestratorService:
                 {
                     "source_kind": "audio",
                     "source_id": str(audio.id),
-                    "title": audio.title or audio.filename,
+                    "title": audio.filename,
                     "processable": has_text,
                     "chunk_count": chunks,
                     "entity_count": entities,
@@ -410,7 +416,7 @@ class ResearchPipelineOrchestratorService:
 
         for entry in out["documents"]:
             if entry.get("chunk_count", 0) > 0 and entry.get("entities_existing", 0) == 0:
-                created = self._extraction.extract_for_document_sync(
+                created = self._extraction_service.extract_for_document_sync(
                     session,
                     UUID(str(entry["source_document_id"])),
                 )
@@ -422,7 +428,7 @@ class ResearchPipelineOrchestratorService:
 
         for entry in out["audios"]:
             if entry.get("chunk_count", 0) > 0 and entry.get("entities_existing", 0) == 0:
-                created = self._extraction.extract_for_audio_sync(
+                created = self._extraction_service.extract_for_audio_sync(
                     session,
                     UUID(str(entry["source_audio_id"])),
                 )
@@ -469,7 +475,7 @@ class ResearchPipelineOrchestratorService:
 
             n_ent = _count_document_entities(session, doc.id)
             if n_ent == 0 and n_chunks > 0:
-                created = self._extraction.extract_for_document_sync(session, doc.id)
+                created = self._extraction_service.extract_for_document_sync(session, doc.id)
                 session.flush()
                 entry["extracted"] = True
                 entry["entities_created"] = created
@@ -500,7 +506,7 @@ class ResearchPipelineOrchestratorService:
 
             n_ent = _count_audio_scope_entities(session, audio.id)
             if n_ent == 0 and n_chunks > 0:
-                created = self._extraction.extract_for_audio_sync(session, audio.id)
+                created = self._extraction_service.extract_for_audio_sync(session, audio.id)
                 session.flush()
                 entry["extracted"] = True
                 entry["entities_created"] = created
