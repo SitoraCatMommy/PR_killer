@@ -419,24 +419,24 @@ class ResearchPipelineOrchestratorService:
 
         audio_stmt = select(SourceAudio).where(SourceAudio.project_id == project_id)
         for audio in session.scalars(audio_stmt).all():
-            entry: dict[str, Any] = {"source_audio_id": str(audio.id)}
+            audio_entry: dict[str, Any] = {"source_audio_id": str(audio.id)}
             tr = _latest_completed_transcript(session, audio.id)
             if tr is None:
-                entry["skipped"] = True
-                entry["reason"] = "no_completed_transcript"
-                out["audios"].append(entry)
+                audio_entry["skipped"] = True
+                audio_entry["reason"] = "no_completed_transcript"
+                out["audios"].append(audio_entry)
                 continue
             n_chunks = _count_audio_scope_chunks(session, audio.id)
             if n_chunks == 0:
                 n_chunks = self._processing.chunk_transcript_sync(session, tr.id, strategy="fixed")
                 session.flush()
-                entry["chunked"] = True
+                audio_entry["chunked"] = True
             else:
-                entry["chunked"] = False
-            entry["chunk_count"] = n_chunks
-            entry["entities_existing"] = _count_audio_scope_entities(session, audio.id)
-            entry["pr_entities_existing"] = _count_audio_scope_pr_entities(session, audio.id)
-            out["audios"].append(entry)
+                audio_entry["chunked"] = False
+            audio_entry["chunk_count"] = n_chunks
+            audio_entry["entities_existing"] = _count_audio_scope_entities(session, audio.id)
+            audio_entry["pr_entities_existing"] = _count_audio_scope_pr_entities(session, audio.id)
+            out["audios"].append(audio_entry)
 
         chunks_to_extract = 0
         for entry in out["documents"]:
@@ -544,35 +544,35 @@ class ResearchPipelineOrchestratorService:
 
         audio_stmt = select(SourceAudio).where(SourceAudio.project_id == project_id)
         for audio in session.scalars(audio_stmt).all():
-            entry: dict[str, Any] = {"source_audio_id": str(audio.id)}
+            audio_entry: dict[str, Any] = {"source_audio_id": str(audio.id)}
             tr = _latest_completed_transcript(session, audio.id)
             if tr is None:
-                entry["skipped"] = True
-                entry["reason"] = "no_completed_transcript"
-                out["audios"].append(entry)
+                audio_entry["skipped"] = True
+                audio_entry["reason"] = "no_completed_transcript"
+                out["audios"].append(audio_entry)
                 continue
 
             n_chunks = _count_audio_scope_chunks(session, audio.id)
             if n_chunks == 0:
                 n_chunks = self._processing.chunk_transcript_sync(session, tr.id, strategy="fixed")
                 session.flush()
-                entry["chunked"] = True
-                entry["chunk_count"] = n_chunks
+                audio_entry["chunked"] = True
+                audio_entry["chunk_count"] = n_chunks
             else:
-                entry["chunked"] = False
-                entry["chunk_count"] = n_chunks
+                audio_entry["chunked"] = False
+                audio_entry["chunk_count"] = n_chunks
 
             n_ent = _count_audio_scope_entities(session, audio.id)
             if n_ent == 0 and n_chunks > 0:
                 created = self._extraction_service.extract_for_audio_sync(session, audio.id)
                 session.flush()
-                entry["extracted"] = True
-                entry["entities_created"] = created
+                audio_entry["extracted"] = True
+                audio_entry["entities_created"] = created
             else:
-                entry["extracted"] = False
-                entry["entities_existing"] = n_ent
+                audio_entry["extracted"] = False
+                audio_entry["entities_existing"] = n_ent
 
-            out["audios"].append(entry)
+            out["audios"].append(audio_entry)
 
         logger.info(
             "ensure_project_sources_pipeline_sync project_id=%s summary=%s",

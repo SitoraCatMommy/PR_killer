@@ -643,7 +643,7 @@ export function ProjectDetailPage() {
   useEffect(() => {
     if (!reportPolling) return;
     const st = projectReport.data?.report?.status;
-    if (st === 'ready' || st === 'failed') setReportPolling(false);
+    if (st === 'ready' || st === 'failed') queueMicrotask(() => setReportPolling(false));
   }, [reportPolling, projectReport.data?.report?.status]);
 
   const srcMeta = sources.data?.meta;
