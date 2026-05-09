@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
@@ -10,6 +11,9 @@ from app.schemas.common import MessageResponse
 from app.schemas.material import MaterialCreate, MaterialRead
 
 router = APIRouter()
+
+AudioUploadFile = Annotated[UploadFile, File()]
+OptionalFormString = Annotated[str | None, Form()]
 
 
 @router.post("/text", response_model=MaterialRead, status_code=status.HTTP_201_CREATED)
@@ -35,10 +39,10 @@ async def ingest_text(body: MaterialCreate, svc: MaterialServiceDep) -> Material
 async def ingest_audio(
     svc: MaterialServiceDep,
     settings: SettingsDep,
-    file: UploadFile = File(...),
-    title: str | None = Form(default=None),
-    source_uri: str | None = Form(default=None),
-    extra_metadata: str | None = Form(default=None),
+    file: AudioUploadFile,
+    title: OptionalFormString = None,
+    source_uri: OptionalFormString = None,
+    extra_metadata: OptionalFormString = None,
 ) -> MaterialRead:
     import json
 

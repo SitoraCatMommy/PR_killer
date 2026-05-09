@@ -165,7 +165,10 @@ class SourceQueryService:
             tr_read = None
         seg_count = await self._transcripts.count_segments(tr.id) if tr else 0
         seg_sample = (
-            [TranscriptSegmentRead.model_validate(s) for s in await self._transcripts.list_segments_preview(tr.id)]
+            [
+                TranscriptSegmentRead.model_validate(s)
+                for s in await self._transcripts.list_segments_preview(tr.id)
+            ]
             if tr
             else []
         )

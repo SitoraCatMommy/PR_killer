@@ -23,7 +23,7 @@ async def read_upload_file_with_limit(
         total += len(chunk)
         if total > max_bytes:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail={
                     "code": "upload_too_large",
                     "message": f"Upload exceeds configured limit of {max_bytes} bytes.",

@@ -5,7 +5,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import MaterialType, ProcessingStatus
+from app.domain.enums import ProcessingStatus
 from app.infrastructure.storage.local import safe_upload_filename
 from app.repositories.material_repository import MaterialRepository
 from app.services.pipeline_dispatcher import MaterialPipelineDispatcher
@@ -34,7 +34,9 @@ class MaterialService:
             extra_metadata=extra_metadata,
         )
         await self._session.commit()
-        task_id = MaterialPipelineDispatcher.enqueue_material_pipeline(m.id) if enqueue_pipeline else None
+        task_id = (
+            MaterialPipelineDispatcher.enqueue_material_pipeline(m.id) if enqueue_pipeline else None
+        )
         return m.id, task_id
 
     async def ingest_audio(
@@ -61,7 +63,9 @@ class MaterialService:
             extra_metadata=extra_metadata,
         )
         await self._session.commit()
-        task_id = MaterialPipelineDispatcher.enqueue_material_pipeline(m.id) if enqueue_pipeline else None
+        task_id = (
+            MaterialPipelineDispatcher.enqueue_material_pipeline(m.id) if enqueue_pipeline else None
+        )
         return m.id, task_id
 
     async def get(self, material_id: UUID):

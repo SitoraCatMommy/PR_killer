@@ -91,6 +91,8 @@ class SourceAudioRepository:
 
     async def count_by_project(self, project_id: UUID) -> int:
         q = await self._session.scalar(
-            select(func.count()).select_from(SourceAudio).where(SourceAudio.project_id == project_id)
+            select(func.count())
+            .select_from(SourceAudio)
+            .where(SourceAudio.project_id == project_id)
         )
         return int(q or 0)

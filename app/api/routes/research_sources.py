@@ -1,3 +1,4 @@
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
@@ -36,6 +37,10 @@ router_nested = APIRouter(
 
 router_detail = APIRouter(prefix="/sources", tags=["research-source-details"])
 
+SourceUploadFile = Annotated[UploadFile, File()]
+SourceTypeForm = Annotated[SourceType, Form()]
+LanguageForm = Annotated[str | None, Form()]
+
 
 def _project_404():
     return HTTPException(
@@ -54,8 +59,8 @@ async def upload_text_source(
     ingestion: IngestionServiceDep,
     projects: ProjectServiceDep,
     settings: SettingsDep,
-    file: UploadFile = File(...),
-    source_type: SourceType = Form(default=SourceType.UPLOAD),
+    file: SourceUploadFile,
+    source_type: SourceTypeForm = SourceType.UPLOAD,
 ) -> SourceDocumentRead:
     if await projects.get(project_id) is None:
         raise _project_404()
@@ -85,9 +90,9 @@ async def upload_audio_source(
     ingestion: IngestionServiceDep,
     projects: ProjectServiceDep,
     settings: SettingsDep,
-    file: UploadFile = File(...),
-    language: str | None = Form(default=None),
-    source_type: SourceType = Form(default=SourceType.UPLOAD),
+    file: SourceUploadFile,
+    language: LanguageForm = None,
+    source_type: SourceTypeForm = SourceType.UPLOAD,
 ) -> SourceAudioRead:
     if await projects.get(project_id) is None:
         raise _project_404()
