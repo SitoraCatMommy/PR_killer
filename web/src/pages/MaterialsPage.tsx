@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ingestMaterialAudio, ingestMaterialText, listMaterials } from '../api/api';
+import { ingestMaterialAudios, ingestMaterialText, listMaterials } from '../api/api';
+import type { BulkUploadResponse } from '../api/types';
 import { ApiErrorText } from '../components/ApiErrorText';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -17,6 +18,13 @@ const LIMIT = 50;
 
 function statusRu(s: string): string {
   return ru.pipelineStatus[s] ?? s;
+}
+
+function bulkUploadText(result: BulkUploadResponse): string {
+  if (result.failed > 0) {
+    return ru.materials.bulkUploadedPartial(result.succeeded, result.failed);
+  }
+  return ru.materials.bulkUploaded(result.succeeded);
 }
 
 export function MaterialsPage() {
@@ -47,7 +55,8 @@ export function MaterialsPage() {
   });
 
   const audioMut = useMutation({
-    mutationFn: (file: File) => ingestMaterialAudio(file, { title: title.trim() || undefined }),
+    mutationFn: (files: File[]) =>
+      ingestMaterialAudios(files, { title: title.trim() || undefined }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['materials'] });
     },
@@ -103,16 +112,17 @@ export function MaterialsPage() {
               type="file"
               className="sr-only"
               accept="audio/*"
+              multiple
               onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) audioMut.mutate(f);
+                const files = Array.from(e.target.files ?? []);
+                if (files.length) audioMut.mutate(files);
                 e.target.value = '';
               }}
             />
           </label>
           {audioMut.error && <ApiErrorText error={audioMut.error} />}
-          {audioMut.isSuccess && (
-            <p className="text-sm text-muted-foreground">{ru.materials.uploaded}</p>
+          {audioMut.data && (
+            <p className="text-sm text-muted-foreground">{bulkUploadText(audioMut.data)}</p>
           )}
         </CardContent>
       </Card>

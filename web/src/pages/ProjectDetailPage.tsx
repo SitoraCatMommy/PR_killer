@@ -22,10 +22,11 @@ import {
   queueRegenerateResearchReport,
   queueProjectAggregate,
   queueTranscribeAudio,
-  uploadAudioSource,
-  uploadTextSource,
+  uploadAudioSources,
+  uploadTextSources,
 } from '../api/api';
 import type {
+  BulkUploadResponse,
   EntityListResponse,
   EntityType,
   PRAnalysisReadiness,
@@ -119,6 +120,13 @@ function reportFailureText(report: ResearchReportRead | null | undefined): strin
   if (extras?.error_message) return extras.error_message;
   if (extras?.error_code) return readinessBlockText(extras.error_code);
   return ru.project.reportStatusFailed;
+}
+
+function bulkUploadStatusText(result: BulkUploadResponse): string {
+  if (result.failed > 0) {
+    return ru.project.uploadPartial(result.succeeded, result.failed);
+  }
+  return ru.project.uploadOkCount(result.succeeded);
 }
 
 function PRReadinessCard({
@@ -522,7 +530,7 @@ export function ProjectDetailPage() {
   };
 
   const uploadTextMut = useMutation({
-    mutationFn: (file: File) => uploadTextSource(projectId, file, uploadSourceType),
+    mutationFn: (files: File[]) => uploadTextSources(projectId, files, uploadSourceType),
     onSuccess: () => {
       invalidateSources();
       invalidateReadiness();
@@ -530,8 +538,8 @@ export function ProjectDetailPage() {
   });
 
   const uploadAudioMut = useMutation({
-    mutationFn: ({ file, language }: { file: File; language?: string }) =>
-      uploadAudioSource(projectId, file, { language: language || undefined, sourceType: uploadSourceType }),
+    mutationFn: ({ files, language }: { files: File[]; language?: string }) =>
+      uploadAudioSources(projectId, files, { language: language || undefined, sourceType: uploadSourceType }),
     onSuccess: () => {
       invalidateSources();
       invalidateReadiness();
@@ -843,9 +851,10 @@ export function ProjectDetailPage() {
                     type="file"
                     className="sr-only"
                     accept=".txt,.md,text/*"
+                    multiple
                     onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) uploadTextMut.mutate(f);
+                      const files = Array.from(e.target.files ?? []);
+                      if (files.length) uploadTextMut.mutate(files);
                       e.target.value = '';
                     }}
                   />
@@ -858,9 +867,10 @@ export function ProjectDetailPage() {
                     type="file"
                     className="sr-only"
                     accept="audio/*"
+                    multiple
                     onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) uploadAudioMut.mutate({ file: f });
+                      const files = Array.from(e.target.files ?? []);
+                      if (files.length) uploadAudioMut.mutate({ files });
                       e.target.value = '';
                     }}
                   />
@@ -869,8 +879,11 @@ export function ProjectDetailPage() {
               {(uploadTextMut.error || uploadAudioMut.error) && (
                 <ApiErrorText error={uploadTextMut.error || uploadAudioMut.error} />
               )}
-              {(uploadTextMut.isSuccess || uploadAudioMut.isSuccess) && (
-                <p className="text-sm text-muted-foreground">{ru.project.uploadOk}</p>
+              {uploadTextMut.data && (
+                <p className="text-sm text-muted-foreground">{bulkUploadStatusText(uploadTextMut.data)}</p>
+              )}
+              {uploadAudioMut.data && (
+                <p className="text-sm text-muted-foreground">{bulkUploadStatusText(uploadAudioMut.data)}</p>
               )}
 
               <Separator />

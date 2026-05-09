@@ -36,6 +36,13 @@ class Settings(BaseSettings):
         alias="UPLOAD_MAX_BYTES",
         description="Maximum accepted request upload size for source/material files.",
     )
+    upload_max_files: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+        alias="UPLOAD_MAX_FILES",
+        description="Maximum number of files accepted by a single bulk upload request.",
+    )
 
     database_url: str = Field(
         default="postgresql+asyncpg://ria:ria@localhost:5432/research_intel",

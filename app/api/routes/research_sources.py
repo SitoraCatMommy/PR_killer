@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
 
 from app.api.deps import (
     IngestionServiceDep,
@@ -16,7 +16,7 @@ from app.infrastructure.database import DbSession
 from app.infrastructure.settings import get_settings
 from app.models.source_audio import SourceAudio
 from app.models.source_document import SourceDocument
-from app.schemas.common import ErrorResponse
+from app.schemas.common import BulkUploadItemResult, BulkUploadResponse, ErrorResponse
 from app.schemas.processing import ProcessingTaskQueued
 from app.schemas.research_chunk import TextChunkRead
 from app.schemas.research_source import (
@@ -38,6 +38,7 @@ router_nested = APIRouter(
 router_detail = APIRouter(prefix="/sources", tags=["research-source-details"])
 
 SourceUploadFile = Annotated[UploadFile, File()]
+SourceUploadFiles = Annotated[list[UploadFile], File()]
 SourceTypeForm = Annotated[SourceType, Form()]
 LanguageForm = Annotated[str | None, Form()]
 
@@ -81,6 +82,77 @@ async def upload_text_source(
 
 
 @router_nested.post(
+    "/text/upload/bulk",
+    response_model=BulkUploadResponse,
+)
+async def upload_text_sources_bulk(
+    project_id: UUID,
+    response: Response,
+    ingestion: IngestionServiceDep,
+    projects: ProjectServiceDep,
+    settings: SettingsDep,
+    files: SourceUploadFiles,
+    source_type: SourceTypeForm = SourceType.UPLOAD,
+) -> BulkUploadResponse:
+    if await projects.get(project_id) is None:
+        raise _project_404()
+    if not files:
+        raise HTTPException(status_code=400, detail="at least one file is required")
+    if len(files) > settings.upload_max_files:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "too_many_files",
+                "message": f"At most {settings.upload_max_files} files can be uploaded at once.",
+                "max_files": settings.upload_max_files,
+            },
+        )
+
+    items: list[BulkUploadItemResult] = []
+    for file in files:
+        filename = file.filename or "upload.txt"
+        try:
+            data = await read_upload_file_with_limit(file, max_bytes=settings.upload_max_bytes)
+        except HTTPException as e:
+            detail = e.detail if isinstance(e.detail, dict) else {}
+            items.append(
+                BulkUploadItemResult(
+                    filename=filename,
+                    status="error",
+                    source_kind="document",
+                    error_code=str(detail.get("code") or e.status_code),
+                    error_message=str(detail.get("message") or e.detail),
+                )
+            )
+            continue
+        doc = await ingestion.upload_text_file(
+            project_id,
+            filename=filename,
+            content=data,
+            mime_type=file.content_type,
+            source_type=source_type,
+            extra_metadata={"bulk_upload": True, "original_filename": filename},
+        )
+        items.append(
+            BulkUploadItemResult(
+                filename=filename,
+                status="ok",
+                id=doc.id,
+                source_kind="document",
+            )
+        )
+
+    failed = sum(1 for item in items if item.status != "ok")
+    response.status_code = status.HTTP_207_MULTI_STATUS if failed else status.HTTP_201_CREATED
+    return BulkUploadResponse(
+        total=len(items),
+        succeeded=len(items) - failed,
+        failed=failed,
+        items=items,
+    )
+
+
+@router_nested.post(
     "/audio/upload",
     response_model=SourceAudioRead,
     status_code=status.HTTP_201_CREATED,
@@ -111,6 +183,79 @@ async def upload_audio_source(
             raise _project_404() from e
         raise
     return SourceAudioRead.model_validate(audio)
+
+
+@router_nested.post(
+    "/audio/upload/bulk",
+    response_model=BulkUploadResponse,
+)
+async def upload_audio_sources_bulk(
+    project_id: UUID,
+    response: Response,
+    ingestion: IngestionServiceDep,
+    projects: ProjectServiceDep,
+    settings: SettingsDep,
+    files: SourceUploadFiles,
+    language: LanguageForm = None,
+    source_type: SourceTypeForm = SourceType.UPLOAD,
+) -> BulkUploadResponse:
+    if await projects.get(project_id) is None:
+        raise _project_404()
+    if not files:
+        raise HTTPException(status_code=400, detail="at least one file is required")
+    if len(files) > settings.upload_max_files:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "too_many_files",
+                "message": f"At most {settings.upload_max_files} files can be uploaded at once.",
+                "max_files": settings.upload_max_files,
+            },
+        )
+
+    items: list[BulkUploadItemResult] = []
+    for file in files:
+        filename = file.filename or "upload.bin"
+        try:
+            data = await read_upload_file_with_limit(file, max_bytes=settings.upload_max_bytes)
+        except HTTPException as e:
+            detail = e.detail if isinstance(e.detail, dict) else {}
+            items.append(
+                BulkUploadItemResult(
+                    filename=filename,
+                    status="error",
+                    source_kind="audio",
+                    error_code=str(detail.get("code") or e.status_code),
+                    error_message=str(detail.get("message") or e.detail),
+                )
+            )
+            continue
+        audio = await ingestion.upload_audio_file(
+            project_id,
+            filename=filename,
+            content=data,
+            mime_type=file.content_type,
+            language=language,
+            source_type=source_type,
+            extra_metadata={"bulk_upload": True, "original_filename": filename},
+        )
+        items.append(
+            BulkUploadItemResult(
+                filename=filename,
+                status="ok",
+                id=audio.id,
+                source_kind="audio",
+            )
+        )
+
+    failed = sum(1 for item in items if item.status != "ok")
+    response.status_code = status.HTTP_207_MULTI_STATUS if failed else status.HTTP_201_CREATED
+    return BulkUploadResponse(
+        total=len(items),
+        succeeded=len(items) - failed,
+        failed=failed,
+        items=items,
+    )
 
 
 @router_nested.post(
