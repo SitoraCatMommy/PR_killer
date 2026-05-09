@@ -5,6 +5,7 @@ import { ApiError } from '../api/client';
 import {
   createRawTextNote,
   deleteProject,
+  getPRAnalysisReadiness,
   getProject,
   getProjectAggregation,
   getProjectReport,
@@ -27,6 +28,8 @@ import {
 import type {
   EntityListResponse,
   EntityType,
+  PRAnalysisReadiness,
+  ResearchReportRead,
   ResearchSummaryRead,
   SourceAudioDetailRead,
   SourceDocumentDetailRead,
@@ -92,6 +95,114 @@ const POLL_MAX_MS = 120_000;
 const FOCUS_NONE = '__none__';
 
 type SourceKind = 'document' | 'audio';
+
+function readinessBlockText(code: string): string {
+  const map = ru.project as unknown as Record<string, string>;
+  return map[`readinessBlock_${code}`] ?? code;
+}
+
+function readinessWarnText(code: string): string {
+  const map = ru.project as unknown as Record<string, string>;
+  return map[`readinessWarn_${code}`] ?? code;
+}
+
+function reportStageText(report: ResearchReportRead | null | undefined): string {
+  const extras = report?.report_extras_json;
+  const stage = extras?.stage;
+  if (stage === 'preparing') return ru.project.reportStagePreparing;
+  if (stage === 'generating_report') return ru.project.reportStageGenerating;
+  return ru.project.reportStatusGenerating;
+}
+
+function reportFailureText(report: ResearchReportRead | null | undefined): string {
+  const extras = report?.report_extras_json;
+  if (extras?.error_message) return extras.error_message;
+  if (extras?.error_code) return readinessBlockText(extras.error_code);
+  return ru.project.reportStatusFailed;
+}
+
+function PRReadinessCard({
+  readiness,
+  isPending,
+  error,
+}: {
+  readiness: PRAnalysisReadiness | undefined;
+  isPending: boolean;
+  error: unknown;
+}) {
+  if (isPending) {
+    return (
+      <Card className="border-dashed bg-muted/10 shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base">{ru.project.readinessTitle}</CardTitle>
+          <CardDescription>{ru.project.readinessIntro}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Skeleton className="h-4 w-2/3" />
+          <Skeleton className="h-10 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+  if (error) return <ApiErrorText error={error} />;
+  if (!readiness) return null;
+  const stat = [
+    [ru.project.readinessSources, readiness.source_count],
+    [ru.project.readinessChunks, readiness.chunk_count],
+    [ru.project.readinessEntities, readiness.entity_count],
+    [
+      `${ru.project.readinessPrSignals} (${ru.project.readinessMinSignals} ${readiness.min_pr_entity_count})`,
+      readiness.pr_entity_count,
+    ],
+  ] as const;
+  return (
+    <Card className={cn('shadow-sm', readiness.ready_for_report ? 'border-emerald-500/30' : 'border-amber-500/30')}>
+      <CardHeader>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle className="text-base">{ru.project.readinessTitle}</CardTitle>
+          <Badge variant={readiness.ready_for_report ? 'secondary' : 'outline'}>
+            {readiness.ready_for_report ? ru.project.readinessReady : ru.project.readinessBlocked}
+          </Badge>
+        </div>
+        <CardDescription>{ru.project.readinessIntro}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          {stat.map(([label, value]) => (
+            <div key={label} className="rounded-md border bg-background p-3">
+              <p className="text-xs text-muted-foreground">{label}</p>
+              <p className="text-lg font-semibold">{value}</p>
+            </div>
+          ))}
+          <div className="rounded-md border bg-background p-3">
+            <p className="text-xs text-muted-foreground">{ru.project.readinessAggregation}</p>
+            <p className="text-sm font-medium">
+              {readiness.aggregation_exists
+                ? ru.project.readinessAggregationReady
+                : ru.project.readinessAggregationMissing}
+            </p>
+          </div>
+        </div>
+        {!!readiness.blocking_reasons.length && (
+          <div className="space-y-1 text-sm">
+            {readiness.blocking_reasons.map((code) => (
+              <p key={code} className="text-amber-700 dark:text-amber-300">
+                • {readinessBlockText(code)}
+              </p>
+            ))}
+          </div>
+        )}
+        {!!readiness.warnings.length && (
+          <div className="space-y-1 text-xs text-muted-foreground">
+            {readiness.warnings.map((code) => (
+              <p key={code}>• {readinessWarnText(code)}</p>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 type PollState =
   | { t: 'chunks'; docId: string; n: number }
@@ -314,6 +425,13 @@ export function ProjectDetailPage() {
     refetchInterval: reportPolling ? POLL_MS : false,
   });
 
+  const readiness = useQuery({
+    queryKey: qk.prAnalysisReadiness(projectId),
+    queryFn: () => getPRAnalysisReadiness(projectId),
+    enabled: !!projectId,
+    refetchInterval: reportPolling || poll != null ? POLL_MS : false,
+  });
+
   const aggregation = useQuery({
     queryKey: qk.projectAggregation(projectId),
     queryFn: () => getProjectAggregation(projectId),
@@ -368,6 +486,7 @@ export function ProjectDetailPage() {
   }, [poll]);
 
   const entMeta = entities.data?.meta;
+  const prReady: PRAnalysisReadiness | undefined = readiness.data;
 
   useEffect(() => {
     if (!poll) return;
@@ -386,9 +505,12 @@ export function ProjectDetailPage() {
   }, [poll, focus, d, a, entMeta?.total, aggregation.data?.snapshot?.created_at, summary.data]);
 
   const invalidateSources = () => void qc.invalidateQueries({ queryKey: ['sources', projectId] });
+  const invalidateReadiness = () =>
+    void qc.invalidateQueries({ queryKey: qk.prAnalysisReadiness(projectId) });
 
   const invalidateAll = () => {
     invalidateSources();
+    invalidateReadiness();
     void qc.invalidateQueries({ queryKey: qk.summary(projectId) });
     void qc.invalidateQueries({ queryKey: qk.projectReport(projectId) });
     void qc.invalidateQueries({ queryKey: ['entities', projectId] });
@@ -401,13 +523,19 @@ export function ProjectDetailPage() {
 
   const uploadTextMut = useMutation({
     mutationFn: (file: File) => uploadTextSource(projectId, file, uploadSourceType),
-    onSuccess: invalidateSources,
+    onSuccess: () => {
+      invalidateSources();
+      invalidateReadiness();
+    },
   });
 
   const uploadAudioMut = useMutation({
     mutationFn: ({ file, language }: { file: File; language?: string }) =>
       uploadAudioSource(projectId, file, { language: language || undefined, sourceType: uploadSourceType }),
-    onSuccess: invalidateSources,
+    onSuccess: () => {
+      invalidateSources();
+      invalidateReadiness();
+    },
   });
 
   const rawNoteMut = useMutation({
@@ -421,6 +549,7 @@ export function ProjectDetailPage() {
       setRawTitle('');
       setRawText('');
       invalidateSources();
+      invalidateReadiness();
     },
   });
 
@@ -482,6 +611,7 @@ export function ProjectDetailPage() {
     onMutate: () => setReportPolling(true),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.projectReport(projectId) });
+      invalidateReadiness();
       void qc.invalidateQueries({ queryKey: ['entities', projectId] });
       void qc.invalidateQueries({ queryKey: qk.projectAggregation(projectId) });
       setWorkspaceTab('report');
@@ -494,6 +624,7 @@ export function ProjectDetailPage() {
     onMutate: () => setReportPolling(true),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.projectReport(projectId) });
+      invalidateReadiness();
       void qc.invalidateQueries({ queryKey: ['entities', projectId] });
       void qc.invalidateQueries({ queryKey: qk.projectAggregation(projectId) });
       setWorkspaceTab('report');
@@ -516,12 +647,14 @@ export function ProjectDetailPage() {
   }, [reportPolling, projectReport.data?.report?.status]);
 
   const srcMeta = sources.data?.meta;
-  const hasData = (srcMeta?.total ?? 0) > 0;
+  const hasData = (prReady?.source_count ?? srcMeta?.total ?? 0) > 0;
   const hasInsights = (entMeta?.total ?? 0) > 0;
   const hasReport = projectReport.data?.report?.status === 'ready';
   const hasSummary = summary.data != null;
 
   const touchedProcessing =
+    (prReady?.chunk_count ?? 0) > 0 ||
+    (prReady?.entity_count ?? 0) > 0 ||
     hasInsights ||
     (d?.text_chunks_count ?? 0) > 0 ||
     (d?.extracted_entities_count ?? 0) > 0 ||
@@ -543,6 +676,12 @@ export function ProjectDetailPage() {
       aggCreated: aggregation.data?.snapshot?.created_at ?? null,
       summary: summary.data,
     });
+  const readinessBlockers = prReady?.blocking_reasons ?? [];
+  const reportHardBlocked =
+    readinessBlockers.includes('no_processable_sources') ||
+    (readinessBlockers.includes('low_pr_signal') &&
+      (prReady?.needs_chunking_count ?? 0) === 0 &&
+      (prReady?.needs_extraction_count ?? 0) === 0);
 
   function sourceStatusForRow(item: { source_kind: string; id: string }) {
     if (focus?.kind === 'document' && item.source_kind === 'document' && item.id === focus.id && d) {
@@ -592,6 +731,7 @@ export function ProjectDetailPage() {
                     reportGenMut.isPending ||
                     reportRegenMut.isPending ||
                     reportPolling ||
+                    reportHardBlocked ||
                     deleteProjectMut.isPending
                   }
                   onClick={() => reportRegenMut.mutate()}
@@ -1013,6 +1153,7 @@ export function ProjectDetailPage() {
                       reportGenMut.isPending ||
                       reportRegenMut.isPending ||
                       reportPolling ||
+                      reportHardBlocked ||
                       deleteProjectMut.isPending
                     }
                     onClick={() => reportGenMut.mutate()}
@@ -1130,6 +1271,11 @@ export function ProjectDetailPage() {
                   <CardDescription>{ru.project.reportTabIntro}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
+                  <PRReadinessCard
+                    readiness={prReady}
+                    isPending={readiness.isPending}
+                    error={readiness.error}
+                  />
                   <div className="flex flex-wrap gap-2">
                     <Button
                       variant="secondary"
@@ -1137,6 +1283,7 @@ export function ProjectDetailPage() {
                         reportGenMut.isPending ||
                         reportRegenMut.isPending ||
                         reportPolling ||
+                        reportHardBlocked ||
                         deleteProjectMut.isPending
                       }
                       onClick={() => reportGenMut.mutate()}
@@ -1171,12 +1318,18 @@ export function ProjectDetailPage() {
                   {projectReport.data?.report?.status === 'generating' && (
                     <Alert>
                       <Loader2 className="size-4 animate-spin" />
-                      <AlertDescription>{ru.project.reportStatusGenerating}</AlertDescription>
+                      <AlertDescription>{reportStageText(projectReport.data.report)}</AlertDescription>
                     </Alert>
                   )}
 
                   {projectReport.data?.report?.status === 'failed' && (
-                    <p className="text-sm text-destructive">{ru.project.reportStatusFailed}</p>
+                    <Alert variant="destructive">
+                      <AlertDescription>
+                        {ru.project.reportStatusFailed}
+                        <br />
+                        {ru.project.reportFailureReason}: {reportFailureText(projectReport.data.report)}
+                      </AlertDescription>
+                    </Alert>
                   )}
 
                   {projectReport.data?.report?.status === 'ready' && (

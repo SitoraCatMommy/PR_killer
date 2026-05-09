@@ -16,4 +16,5 @@ export const qk = {
   dashboardAggregates: ['dashboardAggregates'] as const,
   projectAggregation: (projectId: string) => ['projectAggregation', projectId] as const,
   projectReport: (projectId: string) => ['projectReport', projectId] as const,
+  prAnalysisReadiness: (projectId: string) => ['prAnalysisReadiness', projectId] as const,
 };

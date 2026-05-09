@@ -55,6 +55,9 @@ export type ReportStatus = 'draft' | 'generating' | 'ready' | 'failed';
 
 /** Smart report sections persisted alongside structured JSON columns. */
 export type ReportExtrasJson = {
+  stage?: string;
+  error_code?: string;
+  error_message?: string;
   talking_points?: string[];
   reputational_risks?: string[];
   communication_gaps?: string[];
@@ -96,6 +99,38 @@ export type ResearchReportRead = {
 
 export type ResearchReportEnvelope = {
   report: ResearchReportRead | null;
+};
+export type PRAnalysisReadinessSource = {
+  source_kind: 'document' | 'audio' | string;
+  source_id: string;
+  title: string | null;
+  processable: boolean;
+  chunk_count: number;
+  entity_count: number;
+  pr_entity_count: number;
+  needs_chunking: boolean;
+  needs_extraction: boolean;
+  low_signal: boolean;
+  reason: string | null;
+};
+
+export type PRAnalysisReadiness = {
+  ready_for_report: boolean;
+  blocking_reasons: string[];
+  warnings: string[];
+  source_count: number;
+  processable_document_count: number;
+  completed_transcript_audio_count: number;
+  chunk_count: number;
+  entity_count: number;
+  pr_entity_count: number;
+  supporting_fact_count: number;
+  needs_chunking_count: number;
+  needs_extraction_count: number;
+  low_signal_source_count: number;
+  aggregation_exists: boolean;
+  min_pr_entity_count: number;
+  sources: PRAnalysisReadinessSource[];
 };
 export type ResearchSummaryRead = Schemas['ResearchSummaryRead'];
 export type MaterialRead = Schemas['MaterialRead'];
