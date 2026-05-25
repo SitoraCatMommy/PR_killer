@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Response,
 from sqlalchemy import select
 
 from app.api.deps import IngestionServiceDep, SettingsDep
+from app.api.upload_utils import read_upload_file_with_limit
 from app.domain.enums import BatchSourceProcessingStatus, SourceType
 from app.domain.research_languages import normalize_output_language
 from app.infrastructure.database import DbSession
@@ -43,12 +44,17 @@ from app.schemas.research_batch import (
     BulkUploadResponse,
     BulkUploadResultItem,
     ResearchBatchDetailRead,
+    ResearchBatchQueueSummary,
     ResearchBatchRead,
     ResearchBatchSourceItemRead,
     ResearchBatchSourceRead,
     ResearchBatchUpdate,
 )
-from app.services.batch_queue_service import merge_batch_analysis_metadata
+from app.services.batch_queue_service import (
+    compute_batch_queue_summary,
+    merge_batch_analysis_metadata,
+    schedule_batch_queue,
+)
 from app.services.batch_cached_llm_service import (
     build_full_report_response,
     get_or_create_audience_portrait_response,
@@ -83,7 +89,11 @@ from app.services.research_report_export_service import (
 from app.workers.tasks.batch_processing_queue import process_batch_processing_queue
 from app.workers.tasks.research_batch_report import generate_batch_research_report
 
-router = APIRouter(prefix="/batches", tags=["research-batches"])
+router = APIRouter(
+    prefix="/batches",
+    tags=["research-batches"],
+    deprecated=True,
+)
 
 _MAX_BULK_FILES = 100
 _MAX_BATCH_SOURCES = 200
@@ -185,6 +195,8 @@ async def _sources_as_items(session: DbSession, batch) -> list[ResearchBatchSour
 async def get_batch(batch_id: UUID, session: DbSession) -> ResearchBatchDetailRead:
     b = await _batch_or_404(session, batch_id)
     sources = await _sources_as_items(session, b)
+    qraw = compute_batch_queue_summary(b.sources)
+    queue_summary = ResearchBatchQueueSummary.model_validate(qraw)
     return ResearchBatchDetailRead(
         id=b.id,
         project_id=b.project_id,
@@ -195,6 +207,7 @@ async def get_batch(batch_id: UUID, session: DbSession) -> ResearchBatchDetailRe
         created_at=b.created_at,
         updated_at=b.updated_at,
         sources=sources,
+        queue_summary=queue_summary,
     )
 
 
@@ -1015,6 +1028,7 @@ async def add_batch_source(
         ) from e
     b = await _batch_or_404(session, batch_id)
     repo = ResearchBatchRepository(session)
+    multi_iv = bool(getattr(b, "single_file_multi_interview_mode", True))
     if body.source_document_id is not None:
         doc = await session.get(SourceDocument, body.source_document_id)
         if doc is None or doc.project_id != b.project_id:
@@ -1022,7 +1036,17 @@ async def add_batch_source(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"code": "source_not_found", "message": "Document not in this project"},
             )
-        row = await repo.add_document(batch_id, doc.id)
+        row = await repo.add_document(
+            batch_id,
+            doc.id,
+            processing_status=BatchSourceProcessingStatus.PENDING.value,
+        )
+        doc.metadata_json = merge_batch_analysis_metadata(
+            dict(doc.metadata_json or {}),
+            batch_id=batch_id,
+            batch_source_row_id=row.id,
+            single_file_multi_interview_mode=multi_iv,
+        )
     else:
         assert body.source_audio_id is not None
         aud = await session.get(SourceAudio, body.source_audio_id)
@@ -1031,10 +1055,33 @@ async def add_batch_source(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"code": "source_not_found", "message": "Audio not in this project"},
             )
-        row = await repo.add_audio(batch_id, aud.id)
+        row = await repo.add_audio(
+            batch_id,
+            aud.id,
+            processing_status=BatchSourceProcessingStatus.PENDING.value,
+        )
+        aud.metadata_json = merge_batch_analysis_metadata(
+            dict(aud.metadata_json or {}),
+            batch_id=batch_id,
+            batch_source_row_id=row.id,
+            single_file_multi_interview_mode=multi_iv,
+        )
     await session.commit()
     await session.refresh(row)
-    await invalidate_batch_llm_cache(session, batch_id)
+    try:
+        await invalidate_batch_llm_cache(session, batch_id)
+        await session.commit()
+    except Exception:
+        logger.exception("add_batch_source: invalidate_batch_llm_cache failed batch_id=%s", batch_id)
+        await session.rollback()
+    try:
+        schedule_batch_queue(batch_id)
+    except Exception:
+        logger.exception(
+            "add_batch_source: failed to enqueue process_batch_processing_queue "
+            "(check REDIS_URL / CELERY_BROKER_URL and that Redis is reachable) batch_id=%s",
+            batch_id,
+        )
     return ResearchBatchSourceRead.model_validate(row)
 
 
@@ -1048,6 +1095,7 @@ async def bulk_upload_batch_sources(
     batch_id: UUID,
     session: DbSession,
     ingestion: IngestionServiceDep,
+    settings: SettingsDep,
     files: Annotated[list[UploadFile], File(description="Interview files (audio or text)")],
     metadata_json: str = Form(default="{}"),
     run_analysis: bool = Form(default=False),
@@ -1136,7 +1184,9 @@ async def bulk_upload_batch_sources(
                 sid_doc = None
                 sid_audio = audio.id
             else:
-                data = await up.read()
+                data = await read_upload_file_with_limit(
+                    up, max_bytes=settings.upload_max_bytes
+                )
                 doc = await ingestion.upload_text_file(
                     b.project_id,
                     filename=fname,

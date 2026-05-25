@@ -339,6 +339,13 @@ class ResearchPipelineOrchestratorService:
         supporting_fact_count = _count_project_supporting_facts(session, project_id)
         has_aggregation = _aggregation_exists(session, project_id)
 
+        from app.services.project_queue_service import (
+            fetch_project_queue_summary_sync,
+            project_queue_has_active_work,
+        )
+
+        queue_summary = fetch_project_queue_summary_sync(session, project_id)
+
         decision = build_pr_readiness_decision(
             processable_count=processable_count,
             chunk_count=chunk_count,
@@ -349,12 +356,18 @@ class ResearchPipelineOrchestratorService:
             low_signal_source_count=low_signal_source_count,
             aggregation_exists=has_aggregation,
         )
+        blocking_reasons = list(decision["blocking_reasons"])
+        warnings = list(decision["warnings"])
+        if project_queue_has_active_work(queue_summary):
+            if "processing_not_complete" not in blocking_reasons:
+                blocking_reasons.append("processing_not_complete")
 
         return {
             "project_found": True,
-            "ready_for_report": decision["ready_for_report"],
-            "blocking_reasons": decision["blocking_reasons"],
-            "warnings": decision["warnings"],
+            "ready_for_report": decision["ready_for_report"] and not project_queue_has_active_work(queue_summary),
+            "blocking_reasons": blocking_reasons,
+            "warnings": warnings,
+            "queue_summary": queue_summary,
             "source_count": source_count,
             "processable_document_count": processable_document_count,
             "completed_transcript_audio_count": completed_transcript_audio_count,
@@ -446,6 +459,28 @@ class ResearchPipelineOrchestratorService:
             if entry.get("chunk_count", 0) > 0 and entry.get("entities_existing", 0) == 0:
                 chunks_to_extract += int(entry["chunk_count"])
         out["chunks_to_auto_extract"] = chunks_to_extract
+
+        # If enough PR evidence is already prepared, do not block report generation
+        # just because additional sources still need expensive GPT extraction.
+        pr_entity_count = _count_project_pr_entities(session, project_id)
+        out["pr_entities_existing"] = pr_entity_count
+        if pr_entity_count >= self._settings.pr_report_min_synthesis_entities:
+            if _count_project_entities(session, project_id) > 0:
+                self._aggregation.aggregate_project_sync(session, project_id)
+                session.flush()
+                out["aggregated"] = True
+            else:
+                out["aggregated"] = False
+            out["skipped_auto_extract"] = chunks_to_extract
+            logger.info(
+                "prepare_project_for_pr_report_sync using prepared PR signals project_id=%s "
+                "pr_entity_count=%s skipped_auto_extract_chunks=%s cap=%s",
+                project_id,
+                pr_entity_count,
+                chunks_to_extract,
+                max_auto_extract_chunks,
+            )
+            return out
 
         if (
             self._settings.research_extraction_provider == "gpt"

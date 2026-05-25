@@ -138,7 +138,10 @@ def _llm_split_interviews(raw: str, settings: Settings) -> list[str] | None:
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=key, timeout=120.0)
+        from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
+
+        read_s = max(180.0, float(settings.openai_http_timeout_seconds))
+        client = OpenAI(api_key=key, timeout=httpx_timeout_for_upstream_read(read_seconds=read_s))
         sample = raw[:24_000]
         completion = client.chat.completions.create(
             model=settings.openai_semantic_chunk_model,

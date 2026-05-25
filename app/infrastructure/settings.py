@@ -43,6 +43,18 @@ class Settings(BaseSettings):
         alias="UPLOAD_MAX_FILES",
         description="Maximum number of files accepted by a single bulk upload request.",
     )
+    project_queue_enabled: bool = Field(
+        default=True,
+        alias="PROJECT_QUEUE_ENABLED",
+        description="When true, drain project sources via pending/processing queue instead of fan-out all at once.",
+    )
+    project_queue_concurrency: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        alias="PROJECT_QUEUE_CONCURRENCY",
+        description="Max sources dispatched in parallel per project queue drain.",
+    )
 
     database_url: str = Field(
         default="postgresql+asyncpg://ria:ria@localhost:5432/research_intel",
@@ -65,12 +77,13 @@ class Settings(BaseSettings):
 
     embedding_dimension: int = Field(default=1536, ge=8, le=8192, alias="EMBEDDING_DIMENSION")
 
-    research_transcription_provider: Literal["mock", "openai", "whisper_local", "http"] = Field(
+    research_transcription_provider: Literal["mock", "openai", "whisper_local", "http", "gemini"] = Field(
         default="mock",
         alias="RESEARCH_TRANSCRIPTION_PROVIDER",
         description=(
             "Research ASR: `mock` placeholder; `openai` OpenAI Audio Transcriptions; "
-            "`whisper_local` `whisper` CLI on disk; `http` custom `TRANSCRIPTION_API_URL`."
+            "`whisper_local` `whisper` CLI on disk; `http` custom `TRANSCRIPTION_API_URL`; "
+            "`gemini` Google Gemini multimodal (REST)."
         ),
     )
     research_transcription_fallback_to_mock: bool = Field(
@@ -93,6 +106,41 @@ class Settings(BaseSettings):
         ge=30.0,
         le=3600.0,
         alias="OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS",
+    )
+    transcription_max_segment_bytes: int = Field(
+        default=20 * 1024 * 1024,
+        ge=256 * 1024,
+        le=25 * 1024 * 1024,
+        alias="TRANSCRIPTION_MAX_SEGMENT_BYTES",
+        description="Max bytes per audio slice sent to ASR (OpenAI file limit 25 MiB).",
+    )
+    gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    gemini_transcription_model: str = Field(
+        default="gemini-2.5-flash",
+        alias="GEMINI_TRANSCRIPTION_MODEL",
+    )
+    gemini_transcription_timeout_seconds: float = Field(
+        default=1800.0,
+        ge=60.0,
+        le=7200.0,
+        alias="GEMINI_TRANSCRIPTION_TIMEOUT_SECONDS",
+        description="HTTP read budget for Gemini generateContent (large audio JSON under load).",
+    )
+    gemini_transcription_fast_path_max_duration_seconds: float = Field(
+        default=3600.0,
+        ge=60.0,
+        le=86400.0,
+        alias="GEMINI_TRANSCRIPTION_FAST_PATH_MAX_DURATION_SECONDS",
+    )
+    openai_http_timeout_seconds: float = Field(
+        default=900.0,
+        ge=60.0,
+        le=7200.0,
+        alias="OPENAI_HTTP_TIMEOUT_SECONDS",
+        description=(
+            "HTTP read budget for OpenAI chat clients (extraction, semantic chunking, PR, portraits). "
+            "Increase if workers hit httpx.ReadTimeout with many parallel batches."
+        ),
     )
 
     whisper_local_command: str = Field(
@@ -144,6 +192,13 @@ class Settings(BaseSettings):
         le=16000,
         alias="CHUNK_OVERLAP_CHARS",
         description="Character overlap between consecutive chunks (context carry).",
+    )
+    document_pipeline_active_ttl_seconds: int = Field(
+        default=15 * 60,
+        ge=30,
+        le=24 * 3600,
+        alias="DOCUMENT_PIPELINE_ACTIVE_TTL_SECONDS",
+        description="Fresh chunking/extracting document pipeline state is considered active for this long.",
     )
 
     openai_api_key: str | None = Field(

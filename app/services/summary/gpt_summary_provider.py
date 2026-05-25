@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.enums import SummaryStatus
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings, get_settings
 from app.models.extracted_entity import ExtractedEntity
 from app.models.project import Project
@@ -96,7 +97,11 @@ class GPTSummaryProvider:
         if not key:
             raise ValueError("openai_api_key_missing")
         self._model = self._settings.openai_summary_model
-        self._client = OpenAI(api_key=key, timeout=180.0)
+        read_s = max(180.0, float(self._settings.openai_http_timeout_seconds))
+        self._client = OpenAI(
+            api_key=key,
+            timeout=httpx_timeout_for_upstream_read(read_seconds=read_s),
+        )
 
     def _load_canonical_entities(self, session: Session, project_id: UUID) -> list[ExtractedEntity]:
         return list(

@@ -9,6 +9,7 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 if TYPE_CHECKING:
     from app.models.aggregation_snapshot import AggregationSnapshot
     from app.models.extracted_entity import ExtractedEntity
+    from app.models.research_batch import ResearchBatch
     from app.models.research_report import ResearchReport
     from app.models.research_summary import ResearchSummary
     from app.models.source_audio import SourceAudio
@@ -21,6 +22,7 @@ class Project(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     name: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_language: Mapped[str] = mapped_column(String(8), nullable=False, default="ru")
 
     source_documents: Mapped[list["SourceDocument"]] = relationship(
         back_populates="project",
@@ -47,6 +49,10 @@ class Project(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         cascade="all, delete-orphan",
     )
     research_reports: Mapped[list["ResearchReport"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    research_batches: Mapped[list["ResearchBatch"]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
     )

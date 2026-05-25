@@ -1,14 +1,47 @@
 from __future__ import annotations
 
 import logging
+import struct
 from uuid import UUID
+
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import Session
 
 from app.infrastructure.celery_app import celery_app
 from app.infrastructure.db_sync import sync_session_scope
 from app.infrastructure.settings import get_settings
+from app.models.text_chunk import TextChunk
 from app.services.processing_orchestrator_service import ProcessingOrchestratorService
 
 logger = logging.getLogger(__name__)
+
+
+def _document_chunk_advisory_ints(document_id: UUID) -> tuple[int, int]:
+    b = document_id.bytes
+    k1 = struct.unpack(">i", b[0:4])[0]
+    k2 = struct.unpack(">i", b[4:8])[0]
+    return k1, k2
+
+
+def _try_pg_advisory_lock_chunk_doc(session: Session, document_id: UUID) -> bool:
+    if session.get_bind().dialect.name != "postgresql":
+        return True
+    k1, k2 = _document_chunk_advisory_ints(document_id)
+    got = session.execute(
+        text("SELECT pg_try_advisory_lock(CAST(:k1 AS INTEGER), CAST(:k2 AS INTEGER))"),
+        {"k1": k1, "k2": k2},
+    ).scalar_one()
+    return bool(got)
+
+
+def _release_pg_advisory_lock_chunk_doc(session: Session, document_id: UUID) -> None:
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    k1, k2 = _document_chunk_advisory_ints(document_id)
+    session.execute(
+        text("SELECT pg_advisory_unlock(CAST(:k1 AS INTEGER), CAST(:k2 AS INTEGER))"),
+        {"k1": k1, "k2": k2},
+    )
 
 
 @celery_app.task(name="app.workers.tasks.research_processing.transcribe_audio_source")
@@ -44,7 +77,31 @@ def chunk_source_document(source_document_id: str, strategy: str = "fixed") -> d
         }
     orch = ProcessingOrchestratorService()
     with sync_session_scope() as session:
-        n = orch.chunk_source_document_sync(session, did, strategy=st)
+        if not _try_pg_advisory_lock_chunk_doc(session, did):
+            return {
+                "status": "already_processing",
+                "source_document_id": source_document_id,
+                "chunk_status": "already_processing",
+            }
+        try:
+            existing = int(
+                session.scalar(
+                    select(func.count()).select_from(TextChunk).where(TextChunk.source_document_id == did)
+                )
+                or 0
+            )
+            if existing > 0:
+                return {
+                    "status": "ok",
+                    "source_document_id": source_document_id,
+                    "chunk_count": existing,
+                    "chunking_strategy": st,
+                    "chunk_status": "noop_already_chunked",
+                    "skipped_chunk": True,
+                }
+            n = orch.chunk_source_document_sync(session, did, strategy=st)
+        finally:
+            _release_pg_advisory_lock_chunk_doc(session, did)
     return {
         "status": "ok",
         "source_document_id": source_document_id,

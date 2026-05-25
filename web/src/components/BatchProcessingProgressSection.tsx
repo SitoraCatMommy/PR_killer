@@ -16,6 +16,7 @@ import type {
   BatchDataReadinessDiagnostics,
   DocumentPipelineRow,
 } from '../api/types';
+import type { ResearchBatchSourceRow } from '../api/api';
 import { ru } from '../i18n/ru';
 import { cn } from '@/lib/utils';
 
@@ -47,6 +48,50 @@ function docProgressApprox(phase: string, pipeline: Record<string, unknown>): nu
   return 15;
 }
 
+function queueRowMeta(
+  rows: ResearchBatchSourceRow[] | undefined,
+  sourceDocumentId: string | null | undefined,
+  sourceAudioId: string | null | undefined,
+): { status: string; lastError: string | null } | null {
+  if (!rows?.length) return null;
+  const hit = rows.find((r) => {
+    if (sourceDocumentId && r.source_document_id === sourceDocumentId) return true;
+    if (sourceAudioId && r.source_audio_id === sourceAudioId) return true;
+    return false;
+  });
+  if (!hit) return null;
+  const status = String(hit.processing_status || 'idle').toLowerCase();
+  const lastError = typeof hit.last_error === 'string' && hit.last_error.trim() ? hit.last_error : null;
+  return { status, lastError };
+}
+
+function QueueStatusBadge({ status, lastError }: { status: string; lastError: string | null }) {
+  const s = (status || 'idle').toLowerCase();
+  let label: string = ru.batch.processingQueueIdle;
+  let variant: 'default' | 'secondary' | 'destructive' | 'outline' = 'outline';
+  if (s === 'pending') {
+    label = ru.batch.processingQueuePending;
+    variant = 'secondary';
+  } else if (s === 'processing') {
+    label = ru.batch.processingQueueProcessing;
+    variant = 'secondary';
+  } else if (s === 'completed') {
+    label = ru.batch.processingQueueCompleted;
+    variant = 'default';
+  } else if (s === 'failed') {
+    label = ru.batch.processingQueueFailed;
+    variant = 'destructive';
+  }
+  return (
+    <div className="flex items-center gap-1">
+      {s === 'processing' ? <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" /> : null}
+      <Badge variant={variant} className="text-[10px]" title={lastError || undefined}>
+        {label}
+      </Badge>
+    </div>
+  );
+}
+
 type Props = {
   hasBatchSources: boolean;
   audioPending: boolean;
@@ -55,6 +100,10 @@ type Props = {
   audioItems: BatchAudioPipelineItemRead[];
   diagnostics?: BatchDataReadinessDiagnostics | null;
   documentPipelines?: DocumentPipelineRow[] | null;
+  /** Per-source queue state from GET /batches/:id (``processing_status``). */
+  batchSourceRows?: ResearchBatchSourceRow[] | null;
+  /** True while batch has pending/processing queue rows (Celery drain). */
+  queueActive?: boolean;
   dashboardPending: boolean;
   onRefreshNow: () => void | Promise<void>;
   refreshing: boolean;
@@ -68,6 +117,8 @@ export function BatchProcessingProgressSection({
   audioItems,
   diagnostics,
   documentPipelines,
+  batchSourceRows,
+  queueActive,
   dashboardPending,
   onRefreshNow,
   refreshing,
@@ -103,7 +154,8 @@ export function BatchProcessingProgressSection({
     !pipelinesRunning &&
     (diagnostics?.interviews_processed ?? 0) < 1;
 
-  const showSection = showGlobalBarReason || dataLoading || waitingForPipelineStart;
+  const showSection =
+    showGlobalBarReason || dataLoading || waitingForPipelineStart || Boolean(queueActive);
   if (!showSection) return null;
 
   const percent =
@@ -117,7 +169,7 @@ export function BatchProcessingProgressSection({
   const docRowsFiltered = (documentPipelines ?? []).filter((r) => Boolean(docPhase(r.pipeline)));
 
   return (
-    <div className="space-y-4 rounded-lg border border-primary/30 bg-primary/6 p-4 shadow-sm">
+    <div className="space-y-4 rounded-lg border border-border/80 bg-muted/20 p-4 shadow-sm">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
           <h3 className="text-base font-semibold tracking-tight">{ru.batch.processingBlockTitle}</h3>
@@ -175,6 +227,7 @@ export function BatchProcessingProgressSection({
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-[min(220px,32vw)]">{ru.batch.processingColFile}</TableHead>
+                    <TableHead>{ru.batch.processingColQueue}</TableHead>
                     <TableHead>{ru.batch.processingColStage}</TableHead>
                     <TableHead className="tabular-nums">{ru.batch.processingColChunks}</TableHead>
                     <TableHead className="min-w-[120px]">{ru.batch.processingColProgress}</TableHead>
@@ -192,10 +245,18 @@ export function BatchProcessingProgressSection({
                           : 0;
                     const stage = (it.pipeline_stage || it.current_stage || 'unknown').toString();
                     const failed = (it.overall_status || '').toLowerCase() === 'failed';
+                    const qm = queueRowMeta(batchSourceRows ?? undefined, null, it.source_audio_id);
                     return (
                       <TableRow key={it.source_audio_id}>
                         <TableCell className="max-w-[220px] truncate text-xs font-medium">
                           {it.filename || it.source_audio_id}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {qm ? (
+                            <QueueStatusBadge status={qm.status} lastError={qm.lastError} />
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-xs">
                           <span className="text-muted-foreground">{ru.batch.kindAudio}</span>
@@ -237,10 +298,18 @@ export function BatchProcessingProgressSection({
                     const pct = docProgressApprox(phase, row.pipeline);
                     const chunksN =
                       typeof row.pipeline.chunk_count === 'number' ? row.pipeline.chunk_count : null;
+                    const qm = queueRowMeta(batchSourceRows ?? undefined, row.source_document_id, null);
                     return (
                       <TableRow key={row.source_document_id}>
                         <TableCell className="max-w-[220px] truncate text-xs font-medium">
                           {row.filename || row.source_document_id}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {qm ? (
+                            <QueueStatusBadge status={qm.status} lastError={qm.lastError} />
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-xs">
                           <span className="text-muted-foreground">{ru.batch.kindDocument}</span>

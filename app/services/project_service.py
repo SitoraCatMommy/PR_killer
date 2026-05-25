@@ -15,7 +15,11 @@ class ProjectService:
     async def create(self, body: ProjectCreate) -> ProjectRead:
         if not body.name.strip():
             raise ValueError("invalid_name")
-        p = await self._projects.create(name=body.name.strip(), description=body.description)
+        p = await self._projects.create(
+            name=body.name.strip(),
+            description=body.description,
+            output_language=body.output_language,
+        )
         await self._session.commit()
         await self._session.refresh(p)
         return ProjectRead.model_validate(p)

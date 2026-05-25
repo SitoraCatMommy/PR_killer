@@ -53,6 +53,7 @@ class PRAnalysisReadiness(BaseModel):
     ready_for_report: bool
     blocking_reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    queue_summary: dict[str, Any] = Field(default_factory=dict)
     source_count: int
     processable_document_count: int
     completed_transcript_audio_count: int

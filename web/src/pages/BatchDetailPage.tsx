@@ -1,4 +1,5 @@
-// @ts-nocheck — batch dashboards / LLM bundles are loosely typed JSON until OpenAPI covers full shapes.
+// @ts-nocheck — DEPRECATED: route redirects to ProjectDetailPage. Kept for widget reuse during migration.
+// Batch dashboards / LLM bundles are loosely typed JSON until OpenAPI covers full shapes.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -75,6 +76,7 @@ import {
 import { ru } from '../i18n/ru';
 import { qk } from '../queryKeys';
 import { cn } from '@/lib/utils';
+import { isBatchPipelineIncomplete } from '@/features/batch/processingGate';
 import { normalizeOutputLanguage } from '../utils/outputLanguage';
 import {
   BatchDashboardResearchWidgets,
@@ -682,6 +684,12 @@ export function BatchDetailPage() {
     queryKey: qk.batch(batchId),
     queryFn: () => getBatch(batchId),
     enabled: !!batchId,
+    refetchInterval: (q) => {
+      const s = q.state.data?.queue_summary;
+      if (!s) return false;
+      if ((s.pending ?? 0) > 0 || (s.processing ?? 0) > 0) return 4000;
+      return false;
+    },
   });
 
   const projectRow = useQuery({
@@ -829,30 +837,35 @@ export function BatchDetailPage() {
     return dq.can_synthesize_llm === false;
   }, [dataReadiness.isSuccess, dataReadiness.data?.data_quality]);
 
-  const processingPipelineIncomplete = useMemo(() => {
-    const diag = dataReadiness.data?.data_readiness_diagnostics;
-    const ap = audioPipelineQuery.data?.summary;
-    const items = audioPipelineQuery.data?.items ?? [];
-    if ((batch.data?.sources?.length ?? 0) < 1) return false;
-    if (diag?.pipelines_still_running) return true;
-    if (
-      items.some((it) => {
-        const st = (it.overall_status || '').toLowerCase();
-        return st !== 'ready' && st !== 'failed';
-      })
-    )
-      return true;
-    if ((ap?.in_progress ?? 0) > 0) return true;
-    const t = ap?.total_interviews ?? diag?.interviews_total ?? 0;
-    const p = ap?.processed_interviews ?? diag?.interviews_processed ?? 0;
-    if (t > 0 && p < t) return true;
-    return false;
-  }, [
-    batch.data?.sources?.length,
-    dataReadiness.data?.data_readiness_diagnostics,
-    audioPipelineQuery.data?.summary,
-    audioPipelineQuery.data?.items,
-  ]);
+  const processingPipelineIncomplete = useMemo(
+    () =>
+      isBatchPipelineIncomplete({
+        sourcesLength: batch.data?.sources?.length ?? 0,
+        queuePending: batch.data?.queue_summary?.pending ?? 0,
+        queueProcessing: batch.data?.queue_summary?.processing ?? 0,
+        diagnostics: dataReadiness.data?.data_readiness_diagnostics,
+        audioItemsInFlight: (audioPipelineQuery.data?.items ?? []).some((it) => {
+          const st = (it.overall_status || '').toLowerCase();
+          return st !== 'ready' && st !== 'failed';
+        }),
+        audioInProgress: audioPipelineQuery.data?.summary?.in_progress ?? 0,
+        interviewsTotal:
+          audioPipelineQuery.data?.summary?.total_interviews ??
+          dataReadiness.data?.data_readiness_diagnostics?.interviews_total ??
+          0,
+        interviewsProcessed:
+          audioPipelineQuery.data?.summary?.processed_interviews ??
+          dataReadiness.data?.data_readiness_diagnostics?.interviews_processed ??
+          0,
+      }),
+    [
+      batch.data?.sources?.length,
+      batch.data?.queue_summary,
+      dataReadiness.data?.data_readiness_diagnostics,
+      audioPipelineQuery.data?.summary,
+      audioPipelineQuery.data?.items,
+    ],
+  );
 
   const aiPipelineBlocksFeatures = strictPrBlocksAi || processingPipelineIncomplete;
 
@@ -879,7 +892,8 @@ export function BatchDetailPage() {
     void dataReadiness.refetch();
     void dashboard.refetch();
     void audioPipelineQuery.refetch();
-  }, [qc, batchId, dataReadiness, dashboard, audioPipelineQuery]);
+    void batch.refetch();
+  }, [qc, batchId, dataReadiness, dashboard, audioPipelineQuery, batch]);
 
   const batchDocumentSources = useMemo(
     () => (batch.data?.sources ?? []).filter((s) => s.source_kind === 'document'),
@@ -1150,7 +1164,7 @@ export function BatchDetailPage() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="mx-auto max-w-7xl space-y-6 px-1 pb-10 sm:px-0">
       <nav className="text-sm text-muted-foreground">
         <Link to="/projects" className="font-medium text-foreground hover:underline">
           {ru.nav.projects}
@@ -1168,7 +1182,7 @@ export function BatchDetailPage() {
 
       {batch.data && (
         <>
-          <header className="space-y-3">
+          <header className="space-y-3 border-b border-border/60 pb-6">
             <div className="flex flex-wrap items-center gap-3">
               <Badge variant="secondary" className="rounded-full px-3 py-1 text-xs font-medium">
                 {ru.batch.crumb}
@@ -1188,13 +1202,13 @@ export function BatchDetailPage() {
 
           <Card
             id="batch-bulk-data-stage"
-            className="overflow-hidden border-primary/25 shadow-sm scroll-mt-4"
+            className="overflow-hidden border-border/80 shadow-sm scroll-mt-4"
           >
-            <div className="bg-linear-to-br from-primary/10 via-primary/5 to-background">
+            <div className="bg-muted/30">
               <CardHeader className="gap-3">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="flex items-start gap-3">
-                    <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
+                    <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
                       <Upload className="size-5" />
                     </div>
                     <div className="space-y-1">
@@ -1284,7 +1298,7 @@ export function BatchDetailPage() {
                       onClick={() => setBulkFiles([])}
                     >
                       <X className="mr-1 size-3" />
-                      Очистить
+                      {ru.batch.bulkClear}
                     </Button>
                   </div>
                   <ul className="grid max-h-[220px] gap-2 overflow-auto sm:grid-cols-2">
@@ -1305,7 +1319,7 @@ export function BatchDetailPage() {
                           variant="ghost"
                           size="sm"
                           className="size-7 shrink-0 p-0 text-muted-foreground hover:text-destructive"
-                          aria-label="Убрать файл"
+                          aria-label={ru.batch.bulkRemoveFileAria}
                           onClick={() =>
                             setBulkFiles((prev) => prev.filter((_, i) => i !== idx))
                           }
@@ -1493,7 +1507,8 @@ export function BatchDetailPage() {
                 {bulkFiles.length > 0 && (
                   <p className="mr-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                     <CheckCircle2 className="size-4 text-emerald-600" />
-                    Готово к загрузке: <span className="font-semibold text-foreground">{bulkFiles.length}</span>
+                    {ru.batch.bulkReadyToUpload}{' '}
+                    <span className="font-semibold text-foreground">{bulkFiles.length}</span>
                   </p>
                 )}
                 <Button
@@ -1791,9 +1806,18 @@ export function BatchDetailPage() {
                     (dashboard.data?.document_pipelines ??
                       dataReadiness.data?.document_pipelines) as DocumentPipelineRow[] | undefined
                   }
+                  batchSourceRows={batch.data?.sources}
+                  queueActive={
+                    !!batch.data?.queue_summary &&
+                    ((batch.data.queue_summary.pending ?? 0) > 0 ||
+                      (batch.data.queue_summary.processing ?? 0) > 0)
+                  }
                   dashboardPending={dashboard.isPending}
                   refreshing={
-                    dashboard.isFetching || dataReadiness.isFetching || audioPipelineQuery.isFetching
+                    dashboard.isFetching ||
+                    dataReadiness.isFetching ||
+                    audioPipelineQuery.isFetching ||
+                    batch.isFetching
                   }
                   onRefreshNow={onRefreshProcessing}
                 />

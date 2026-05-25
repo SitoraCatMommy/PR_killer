@@ -47,3 +47,42 @@ def test_pr_grounding_omits_low_evidence() -> None:
     )
     assert out == []
 
+
+def test_pr_grounding_action_cards_fallback() -> None:
+    """When classic insight lists are empty, grounding rows are built from action_cards."""
+    quotes = [
+        {
+            "type": "problem",
+            "title": "price",
+            "text": "We worry about the subscription price and billing clarity each month",
+            "entity_id": "e1",
+            "source_document_id": "d1",
+        },
+        {
+            "type": "problem",
+            "title": "support",
+            "text": "Support response time is slow when we have billing questions",
+            "entity_id": "e2",
+            "source_document_id": "d1",
+        },
+    ]
+    strategy = {
+        "key_pr_insights": [],
+        "reputational_risks": [],
+        "recommended_messages": [],
+        "action_cards": [
+            {
+                "action": "Clarify pricing",
+                "message": "Users worry about subscription price and billing",
+                "evidence_refs": [
+                    {"quote": quotes[0]["text"], "entity_id": "e1"},
+                    {"quote": quotes[1]["text"], "entity_id": "e2"},
+                ],
+            }
+        ],
+    }
+    out = build_pr_grounding(strategy, quotes)
+    assert len(out) >= 1
+    assert out[0]["insight_type"] == "action_card"
+    assert len(out[0]["evidence"]) >= 2
+

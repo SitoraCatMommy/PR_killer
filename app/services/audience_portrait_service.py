@@ -13,6 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import EntityType
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings, get_settings
 from app.models.extracted_entity import ExtractedEntity
 from app.models.research_batch import ResearchBatch
@@ -34,6 +35,8 @@ from app.services.research_batch_dashboard_service import (
     DASHBOARD_GROUP_BY_FIELDS,
     _aggregate_entities_block,
     _audience_snapshot_from_metas,
+    _build_pr_insight_rollups,
+    _entity_quote,
     _load_metadata_maps,
     _meta_for_entity,
     _segment_label,
@@ -58,6 +61,85 @@ _QUOTE_ENTITY_TYPES = frozenset(
 _MAX_ENTITIES_LOAD = 4000
 _MAX_QUOTES = 64
 _MAX_QUOTE_CHARS = 380
+
+
+def _quote_source_bucket(q: dict[str, Any]) -> str:
+    if q.get("source_document_id"):
+        return f"d:{q['source_document_id']}"
+    if q.get("source_audio_id"):
+        return f"a:{q['source_audio_id']}"
+    if q.get("transcript_id"):
+        return f"t:{q['transcript_id']}"
+    return "z:unknown"
+
+
+def _stratify_quotes_by_source(items: list[dict[str, Any]], *, max_total: int) -> list[dict[str, Any]]:
+    from collections import defaultdict
+
+    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for q in items:
+        buckets[_quote_source_bucket(q)].append(q)
+    keys = sorted(buckets.keys(), key=lambda k: (k.startswith("z:"), k))
+    out: list[dict[str, Any]] = []
+    round_idx = 0
+    while len(out) < max_total:
+        progressed = False
+        for k in keys:
+            lst = buckets[k]
+            if round_idx < len(lst):
+                out.append(lst[round_idx])
+                progressed = True
+                if len(out) >= max_total:
+                    break
+        if not progressed:
+            break
+        round_idx += 1
+    return out
+
+
+def _build_interview_evidence_summaries(
+    entities: list[ExtractedEntity],
+    doc_ids: list[UUID],
+    audio_ids: list[UUID],
+    *,
+    limit_topics: int = 3,
+    max_items: int = 24,
+) -> list[dict[str, Any]]:
+    from collections import Counter, defaultdict
+
+    titles_by_key: dict[str, Counter[str]] = defaultdict(Counter)
+
+    def _ent_bucket(e: ExtractedEntity) -> str:
+        if e.source_document_id:
+            return f"d:{e.source_document_id}"
+        if e.source_audio_id:
+            return f"a:{e.source_audio_id}"
+        if e.transcript_id:
+            return f"t:{e.transcript_id}"
+        return ""
+
+    for e in entities:
+        lab = (e.title or "").strip()[:220]
+        if not lab:
+            continue
+        bk = _ent_bucket(e)
+        if bk:
+            titles_by_key[bk][lab] += 1
+
+    out: list[dict[str, Any]] = []
+    for did in doc_ids:
+        top = titles_by_key[f"d:{did}"].most_common(limit_topics)
+        out.append(
+            {
+                "source_kind": "document",
+                "source_document_id": str(did),
+                "top_signals": [t for t, _c in top],
+            }
+        )
+    for aid in audio_ids:
+        top = titles_by_key[f"a:{aid}"].most_common(limit_topics)
+        out.append({"source_kind": "audio", "source_audio_id": str(aid), "top_signals": [t for t, _c in top]})
+    return out[:max_items]
 
 
 def _system_prompt(output_language: str) -> str:
@@ -206,7 +288,8 @@ def _generate_sync(user_message: str, output_language: str, settings: Settings) 
     key = (settings.openai_api_key or "").strip()
     if not key:
         raise ValueError("openai_api_key_missing")
-    client = OpenAI(api_key=key, timeout=120.0)
+    read_s = max(120.0, float(settings.openai_http_timeout_seconds))
+    client = OpenAI(api_key=key, timeout=httpx_timeout_for_upstream_read(read_seconds=read_s))
     completion = client.chat.completions.create(
         model=settings.openai_summary_model,
         messages=[
@@ -270,6 +353,7 @@ async def build_portrait_context(
             "top_patterns": [],
             "top_insights": [],
             "quotes": [],
+            "interview_evidence_summaries": [],
             "entity_row_count": 0,
             "evidence_quotes_count": 0,
         }
@@ -322,11 +406,11 @@ async def build_portrait_context(
     )
     wf = await _word_frequency_for_chunk_filter(session, chunk_scope, limit=36)
 
-    quotes: list[dict[str, Any]] = []
+    quote_candidates: list[dict[str, Any]] = []
     for e in entities:
         if e.entity_type not in _QUOTE_ENTITY_TYPES:
             continue
-        text = (e.content or "").strip()
+        text = _entity_quote(e, max_len=_MAX_QUOTE_CHARS)
         if len(text) < 12:
             continue
         q: dict[str, Any] = {
@@ -348,9 +432,19 @@ async def build_portrait_context(
         seg_obj = {k: v for k, v in seg_obj.items() if v and v != "unknown"}
         if seg_obj:
             q["segment"] = seg_obj
-        quotes.append(q)
-        if len(quotes) >= _MAX_QUOTES:
-            break
+        quote_candidates.append(q)
+
+    quotes = _stratify_quotes_by_source(quote_candidates, max_total=_MAX_QUOTES)
+
+    interview_evidence_summaries = _build_interview_evidence_summaries(entities, doc_ids, audio_ids)
+
+    pr_insight_rollups = _build_pr_insight_rollups(
+        entities,
+        doc_meta=doc_meta,
+        audio_meta=audio_meta,
+        transcript_to_audio=transcript_to_audio,
+        limit_groups=18,
+    )
 
     if group_by and segment_value and group_by in DASHBOARD_GROUP_BY_FIELDS:
         base_ic = len(metas_filtered)
@@ -383,7 +477,9 @@ async def build_portrait_context(
         "sentiment": agg["sentiment"],
         "top_patterns": agg["top_patterns"][:12],
         "top_insights": agg["top_insights"][:18],
+        "pr_insight_rollups": pr_insight_rollups,
         "quotes": quotes,
+        "interview_evidence_summaries": interview_evidence_summaries,
         "entity_row_count": len(entities),
         "evidence_quotes_count": evidence_quotes_count,
     }

@@ -10,6 +10,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings, get_settings
 from app.schemas.decision_layer import DecisionAlertItem
 
@@ -344,7 +345,8 @@ def generate_compare_decision_layer_sync(
         strategy_b=strategy_b,
         output_language=lang,
     )
-    client = OpenAI(api_key=key, timeout=120.0)
+    read_s = max(120.0, float(settings.openai_http_timeout_seconds))
+    client = OpenAI(api_key=key, timeout=httpx_timeout_for_upstream_read(read_seconds=read_s))
     completion = client.chat.completions.create(
         model=settings.openai_report_model,
         messages=[

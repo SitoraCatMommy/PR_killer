@@ -10,6 +10,7 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
     from app.models.project import Project
+    from app.models.research_batch import ResearchBatch
 
 
 class ResearchReport(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -19,12 +20,19 @@ class ResearchReport(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         Index("ix_research_reports_project_id_updated_at", "project_id", "updated_at"),
         Index("ix_research_reports_project_id_status", "project_id", "status"),
+        Index("ix_research_reports_batch_id_updated_at", "batch_id", "updated_at"),
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("research_batches.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     status: Mapped[ReportStatus] = mapped_column(
@@ -77,3 +85,7 @@ class ResearchReport(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     project: Mapped["Project"] = relationship(back_populates="research_reports")
+    batch: Mapped["ResearchBatch | None"] = relationship(
+        back_populates="research_reports",
+        foreign_keys="ResearchReport.batch_id",
+    )

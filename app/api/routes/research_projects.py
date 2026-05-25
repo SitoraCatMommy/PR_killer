@@ -1,17 +1,26 @@
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from app.api.deps import PaginationDep, ProjectServiceDep
+from app.api.routes.research_batches import _dashboard_build_kwargs
 from app.infrastructure.database import DbSession
 from app.models.project import Project
 from app.repositories.aggregation_snapshot_repository import AggregationSnapshotRepository
+from app.repositories.research_batch_repository import ResearchBatchRepository
 from app.repositories.research_report_repository import ResearchReportRepository
 from app.schemas.common import ErrorResponse
+from app.schemas.pagination import PaginatedMeta
 from app.schemas.processing import ProcessingTaskQueued
 from app.schemas.research_aggregation import (
     ResearchAggregationSnapshotRead,
     ResearchAggregationSnapshotResponse,
+)
+from app.schemas.research_batch import (
+    BatchDashboardResponse,
+    ResearchBatchCreate,
+    ResearchBatchListResponse,
+    ResearchBatchRead,
 )
 from app.schemas.research_project import ProjectCreate, ProjectListResponse, ProjectRead
 from app.schemas.research_report import (
@@ -19,6 +28,7 @@ from app.schemas.research_report import (
     ResearchReportEnvelope,
     ResearchReportRead,
 )
+from app.services.research_batch_dashboard_service import build_project_dashboard
 from app.services.research_pipeline_orchestrator_service import ResearchPipelineOrchestratorService
 from app.workers.tasks.research_aggregate import aggregate_project, generate_project_summary
 from app.workers.tasks.research_report import prepare_and_generate_research_report
@@ -53,6 +63,101 @@ async def list_projects(
         offset=pagination.offset,
         limit=pagination.limit,
     )
+
+
+@router.post(
+    "/{project_id}/batches",
+    response_model=ResearchBatchRead,
+    status_code=status.HTTP_201_CREATED,
+    responses={404: {"model": ErrorResponse}},
+)
+async def create_project_batch(
+    project_id: UUID,
+    body: ResearchBatchCreate,
+    session: DbSession,
+) -> ResearchBatchRead:
+    if await session.get(Project, project_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "project_not_found", "message": "Project not found"},
+        )
+    repo = ResearchBatchRepository(session)
+    batch = await repo.create(project_id=project_id, name=body.name, description=body.description)
+    await session.commit()
+    await session.refresh(batch)
+    return ResearchBatchRead.model_validate(batch)
+
+
+@router.get(
+    "/{project_id}/batches",
+    response_model=ResearchBatchListResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+async def list_project_batches(
+    project_id: UUID,
+    session: DbSession,
+    pagination: PaginationDep,
+) -> ResearchBatchListResponse:
+    if await session.get(Project, project_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "project_not_found", "message": "Project not found"},
+        )
+    repo = ResearchBatchRepository(session)
+    rows, total = await repo.list_for_project(
+        project_id,
+        offset=pagination.offset,
+        limit=pagination.limit,
+    )
+    return ResearchBatchListResponse(
+        items=[ResearchBatchRead.model_validate(r) for r in rows],
+        meta=PaginatedMeta(total=total, limit=pagination.limit, offset=pagination.offset),
+    )
+
+
+@router.get(
+    "/{project_id}/dashboard",
+    response_model=BatchDashboardResponse,
+    responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}},
+)
+async def get_project_dashboard(
+    project_id: UUID,
+    session: DbSession,
+    group_by: str | None = Query(
+        default=None,
+        description="Optional segment field from source metadata_json (gender, age_range, segments, …).",
+    ),
+    segment_key: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    stopwords: bool = Query(default=False),
+    compare_segment_a: str | None = Query(default=None),
+    compare_segment_b: str | None = Query(default=None),
+) -> BatchDashboardResponse:
+    if await session.get(Project, project_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "project_not_found", "message": "Project not found"},
+        )
+    kwargs = _dashboard_build_kwargs(
+        group_by=group_by,
+        segment_key=segment_key,
+        date_from=date_from,
+        date_to=date_to,
+        stopwords=stopwords,
+        compare_segment_a=compare_segment_a,
+        compare_segment_b=compare_segment_b,
+    )
+    try:
+        payload = await build_project_dashboard(session, project_id, **kwargs)
+    except ValueError as e:
+        if str(e) == "project_not_found":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "project_not_found", "message": "Project not found"},
+            ) from e
+        raise
+    return BatchDashboardResponse.model_validate(payload)
 
 
 @router.post(

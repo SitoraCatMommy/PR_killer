@@ -6,6 +6,20 @@ class MaterialType(StrEnum):
     AUDIO = "audio"
 
 
+class SourceProcessingStatus(StrEnum):
+    """Per-source queue state for project-wide processing pipeline."""
+
+    IDLE = "idle"
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+# Deprecated alias: batch rows use the same status values as project sources.
+BatchSourceProcessingStatus = SourceProcessingStatus
+
+
 class ProcessingStatus(StrEnum):
     PENDING = "pending"
     TRANSCRIBING = "transcribing"
@@ -87,6 +101,26 @@ class JobStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class AudioPipelineStatus(StrEnum):
+    """Chunked audio ingestion / transcription lifecycle on ``SourceAudio``."""
+
+    UPLOADED = "uploaded"
+    SPLITTING = "splitting"
+    TRANSCRIBING = "transcribing"
+    MERGING = "merging"
+    READY = "ready"
+    FAILED = "failed"
+
+
+class AudioSegmentStatus(StrEnum):
+    """Per-slice state for ``AudioSegment`` rows."""
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
 
 
 class SummaryStatus(StrEnum):

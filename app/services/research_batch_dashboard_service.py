@@ -137,6 +137,7 @@ def _build_data_readiness_diagnostics(
         missing.append("chunking_not_run_or_empty_corpus")
     if chunks_total > 0 and entities_total < 1:
         missing.append("no_entities")
+    entity_extraction_gap = bool(chunks_total > 0 and entities_total < 1)
     if entities_total > 0 and not (base_block.get("topics_pie") or []):
         missing.append("no_typed_topic_labels")
     risk_rows = base_block.get("risks_bar") or []
@@ -159,8 +160,6 @@ def _build_data_readiness_diagnostics(
             pipelines_still_running = True
     if audio_scope_count > 0 and transcripts_completed < audio_scope_count:
         pipelines_still_running = True
-    if chunks_total > 0 and entities_total < 1:
-        pipelines_still_running = True
 
     return {
         "interviews_total": int(interviews_total),
@@ -172,6 +171,7 @@ def _build_data_readiness_diagnostics(
         "quotes_total": int(quotes_total),
         "missing_steps": missing,
         "pipelines_still_running": pipelines_still_running,
+        "entity_extraction_gap": entity_extraction_gap,
         "visualization_note": (
             "Недостаточно извлечённых сущностей для визуализации"
             if entities_total < 1
@@ -243,6 +243,26 @@ def _sentiment_with_fractions(sent: dict[str, Any]) -> dict[str, Any]:
         "negative_pct": round(100.0 * neg / tot, 1),
         "neutralish_pct": round(max(0.0, rem), 1),
     }
+
+
+def _entity_quote(e: ExtractedEntity, *, max_len: int = 360) -> str:
+    ev = dict(e.evidence_json or {})
+    q = str(ev.get("quote") or "").strip()
+    if not q:
+        q = (e.content or "").strip()
+    q = " ".join(q.split())
+    return q[:max_len]
+
+
+def _human_insight_text(e: ExtractedEntity, label: str, pr_signal: str) -> str:
+    """Turn an extracted label into a short analyst-style sentence grounded in the respondent wording."""
+    quote = _entity_quote(e, max_len=220)
+    clean_label = " ".join((label or "").split()).strip(" .")
+    if not clean_label:
+        clean_label = taxonomy_label_for_entity(e.entity_type, dict(e.tags_json or {}))
+    if quote and quote.lower() != clean_label.lower():
+        return f"В интервью повторяется сигнал «{clean_label}»: респондент формулирует это так — «{quote}»."
+    return f"В интервью повторяется сигнал «{clean_label}» в зоне «{pr_signal}»."
 
 
 def _build_pr_insight_rollups(
@@ -457,7 +477,20 @@ def _aggregate_entities_block(entities: list[ExtractedEntity]) -> dict[str, Any]
             neg_n += 1
         if et in PR_SYNTHESIS_INSIGHT_TYPES:
             pr_lab = taxonomy_label_for_entity(et, dict(e.tags_json or {}))
-            insight_candidates.append({"pr_signal_type": pr_lab, "entity_type": et.value, "text": t[:400]})
+            quote = _entity_quote(e)
+            insight_candidates.append(
+                {
+                    "pr_signal_type": pr_lab,
+                    "entity_type": et.value,
+                    "label": t[:220],
+                    "text": _human_insight_text(e, t[:220], pr_lab)[:700],
+                    "evidence_quote": quote,
+                    "source_document_id": str(e.source_document_id) if e.source_document_id else None,
+                    "source_audio_id": str(e.source_audio_id) if e.source_audio_id else None,
+                    "transcript_id": str(e.transcript_id) if e.transcript_id else None,
+                    "chunk_id": str(e.chunk_id),
+                }
+            )
         if et in (EntityType.SUPPORTING_FACT, EntityType.CLAIM, EntityType.CUSTOM, EntityType.TOPIC):
             label = (e.title or "").strip()[:120] or (e.content or "").strip()[:120]
             if len(label) >= 8:
@@ -480,8 +513,19 @@ def _aggregate_entities_block(entities: list[ExtractedEntity]) -> dict[str, Any]
             if len(lab) < 12:
                 continue
             pr_lab = taxonomy_label_for_entity(e.entity_type, dict(e.tags_json or {}))
+            quote = _entity_quote(e)
             insight_candidates.append(
-                {"pr_signal_type": pr_lab, "entity_type": e.entity_type.value, "text": lab},
+                {
+                    "pr_signal_type": pr_lab,
+                    "entity_type": e.entity_type.value,
+                    "label": lab[:220],
+                    "text": _human_insight_text(e, lab[:220], pr_lab)[:700],
+                    "evidence_quote": quote,
+                    "source_document_id": str(e.source_document_id) if e.source_document_id else None,
+                    "source_audio_id": str(e.source_audio_id) if e.source_audio_id else None,
+                    "transcript_id": str(e.transcript_id) if e.transcript_id else None,
+                    "chunk_id": str(e.chunk_id),
+                },
             )
             if len(insight_candidates) >= 20:
                 break
@@ -1016,7 +1060,7 @@ async def build_batch_dashboard(
 
     qmini: list[dict[str, Any]] = []
     for e in entities[:40]:
-        t = (e.content or "").strip()
+        t = _entity_quote(e, max_len=300)
         if len(t) < 16:
             continue
         qmini.append(
@@ -1025,6 +1069,10 @@ async def build_batch_dashboard(
                 "type": e.entity_type.value,
                 "text": t[:300],
                 "title": (e.title or "")[:200],
+                "source_document_id": str(e.source_document_id) if e.source_document_id else None,
+                "source_audio_id": str(e.source_audio_id) if e.source_audio_id else None,
+                "transcript_id": str(e.transcript_id) if e.transcript_id else None,
+                "chunk_id": str(e.chunk_id),
             }
         )
         if len(qmini) >= 8:

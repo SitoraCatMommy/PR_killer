@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings
 from app.services.transcription.data import StructuredTranscriptionResult, TranscriptSegmentData
 
@@ -153,13 +154,15 @@ def _gemini_http_sync(
             "responseMimeType": "application/json",
         },
     }
-    timeout = float(settings.gemini_transcription_timeout_seconds)
+    read_budget = float(settings.gemini_transcription_timeout_seconds)
+    timeout = httpx_timeout_for_upstream_read(read_seconds=read_budget, connect_seconds=60.0)
     logger.info(
-        "gemini_transcription_request model=%s bytes=%s mime=%s language_hint=%s",
+        "gemini_transcription_request model=%s bytes=%s mime=%s language_hint=%s read_timeout_s=%s",
         model,
         len(audio_bytes),
         mime,
         language_hint,
+        read_budget,
     )
     with httpx.Client(timeout=timeout) as client:
         resp = client.post(url, json=body)

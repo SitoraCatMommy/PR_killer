@@ -82,3 +82,13 @@ class RawTextNoteCreate(BaseModel):
     title: str = Field(max_length=1024)
     text: str
     metadata_json: dict[str, Any] | None = None
+
+
+class TranscriptPromoteRequest(BaseModel):
+    target_project_id: UUID
+    research_batch_id: UUID | None = None
+    filename_stem: str = Field(default="transcript", max_length=200)
+
+
+class TranscriptPromoteResponse(BaseModel):
+    source_document_id: UUID

@@ -19,6 +19,7 @@ from app.domain.enums import EntityType, ReportStatus
 from app.domain.pr_workspace import PR_SYNTHESIS_ENTITY_TYPES
 from app.domain.research_constants import PERIOD_KEY_ALL_TIME, SNAPSHOT_TYPE_RESEARCH_ENTITIES
 from app.domain.research_units import PRIMARY_RESEARCH_ENTITY_TYPES
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings, get_settings
 from app.models.aggregation_snapshot import AggregationSnapshot
 from app.models.extracted_entity import ExtractedEntity
@@ -1219,7 +1220,11 @@ class ResearchReportGenerationService:
         prompt_limit = self._settings.pr_report_max_prompt_chars or _DEFAULT_MAX_USER_JSON_CHARS
         user = _bounded_user_payload_json(user_payload, max_chars=prompt_limit)
 
-        client = OpenAI(api_key=key, timeout=180.0)
+        read_s = max(300.0, float(self._settings.openai_http_timeout_seconds))
+        client = OpenAI(
+            api_key=key,
+            timeout=httpx_timeout_for_upstream_read(read_seconds=read_s),
+        )
         system_prompt = _build_report_system(brand, report_language)
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},

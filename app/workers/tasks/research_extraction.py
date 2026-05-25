@@ -11,6 +11,8 @@ from app.models.extracted_entity import ExtractedEntity
 from app.models.source_audio import SourceAudio
 from app.models.source_document import SourceDocument
 from app.models.transcript import Transcript
+from app.services.batch_queue_service import maybe_finalize_batch_after_audio_extract_outcome
+from app.services.project_queue_service import maybe_finalize_project_after_audio_extract_outcome
 from app.services.research_extraction_service import ExtractionService
 
 logger = logging.getLogger(__name__)
@@ -80,11 +82,19 @@ def extract_entities_for_transcript(transcript_id: str) -> dict:
                         audio.project_id,
                         total_proj,
                     )
+        maybe_finalize_project_after_audio_extract_outcome(tid, pipeline_ok=True)
+        maybe_finalize_batch_after_audio_extract_outcome(tid, pipeline_ok=True)
         return {"status": "ok", "transcript_id": transcript_id, "entities_created": n}
     except ValueError as e:
         if str(e) == "transcript_not_found":
             logger.warning("extract_entities_for_transcript: transcript missing %s", transcript_id)
             return {"status": "missing", "transcript_id": transcript_id}
+        maybe_finalize_project_after_audio_extract_outcome(tid, pipeline_ok=False, error_message=str(e))
+        maybe_finalize_batch_after_audio_extract_outcome(tid, pipeline_ok=False, error_message=str(e))
+        raise
+    except Exception as exc:  # noqa: BLE001
+        maybe_finalize_project_after_audio_extract_outcome(tid, pipeline_ok=False, error_message=repr(exc))
+        maybe_finalize_batch_after_audio_extract_outcome(tid, pipeline_ok=False, error_message=repr(exc))
         raise
 
 

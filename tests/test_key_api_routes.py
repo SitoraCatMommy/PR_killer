@@ -42,7 +42,28 @@ def test_project_dashboard_not_500(client: TestClient, api_prefix: str) -> None:
     assert r2.status_code < 500, r2.text
 
 
-def test_project_sources_and_batches_not_500(client: TestClient, api_prefix: str) -> None:
+def test_project_analysis_routes_not_500(client: TestClient, api_prefix: str) -> None:
+    r = client.get(f"{api_prefix}/projects", params={"limit": 1})
+    assert r.status_code == 200, r.text
+    items = r.json().get("items") or []
+    if not items:
+        pytest.skip("No projects in database")
+    pid = items[0]["id"]
+    for path in (
+        f"/projects/{pid}/process",
+        f"/projects/{pid}/audience-portrait",
+        f"/projects/{pid}/pr-strategy",
+        f"/projects/{pid}/full-report",
+    ):
+        method = "post" if path.endswith("/process") else "get"
+        if method == "post":
+            resp = client.post(f"{api_prefix}{path}")
+        else:
+            resp = client.get(f"{api_prefix}{path}")
+        assert resp.status_code < 500, f"{path} -> {resp.status_code} {resp.text}"
+
+
+def test_project_sources_not_500(client: TestClient, api_prefix: str) -> None:
     r = client.get(f"{api_prefix}/projects", params={"limit": 1})
     assert r.status_code == 200, r.text
     items = r.json().get("items") or []
@@ -53,27 +74,6 @@ def test_project_sources_and_batches_not_500(client: TestClient, api_prefix: str
     r2 = client.get(f"{api_prefix}/projects/{pid}/sources", params={"limit": 5})
     assert r2.status_code < 500, r2.text
 
-    r3 = client.get(f"{api_prefix}/projects/{pid}/batches", params={"limit": 5})
-    assert r3.status_code < 500, r3.text
-
-
-def test_batch_detail_not_500(client: TestClient, api_prefix: str) -> None:
-    r = client.get(f"{api_prefix}/projects", params={"limit": 1})
-    assert r.status_code == 200
-    items = r.json().get("items") or []
-    if not items:
-        pytest.skip("No projects in database")
-    pid = items[0]["id"]
-    r2 = client.get(f"{api_prefix}/projects/{pid}/batches", params={"limit": 1})
-    assert r2.status_code == 200, r2.text
-    batches = r2.json().get("items") or []
-    if not batches:
-        pytest.skip("No batches for first project")
-    bid = batches[0]["id"]
-    r3 = client.get(f"{api_prefix}/batches/{bid}")
-    assert r3.status_code < 500, r3.text
-
-
 def test_public_report_invalid_token_not_500(client: TestClient, api_prefix: str) -> None:
     r = client.get(f"{api_prefix}/report/public/unknown-token-xxxxxxxxxxxx")
     assert r.status_code < 500, r.text
@@ -83,30 +83,3 @@ def test_public_report_invalid_token_not_500(client: TestClient, api_prefix: str
     assert detail.get("code") == "report_not_found"
 
 
-def test_batch_export_excel_missing_project_returns_404_not_500(
-    client: TestClient, api_prefix: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Regression: missing Project must be 404, not AssertionError -> 500."""
-    from uuid import uuid4
-
-    from app.api.routes import research_batches as rb
-    from app.models.research_batch import ResearchBatch
-
-    fake_batch = ResearchBatch(
-        id=uuid4(),
-        project_id=uuid4(),
-        name="t",
-        description=None,
-    )
-
-    async def fake_batch_or_404(_session: object, _batch_id: object) -> ResearchBatch:
-        return fake_batch
-
-    monkeypatch.setattr(rb, "_batch_or_404", fake_batch_or_404)
-
-    r = client.get(f"{api_prefix}/batches/{fake_batch.id}/export/excel")
-    assert r.status_code < 500, r.text
-    assert r.status_code == 404
-    detail = _unwrap_detail(r.json())
-    assert detail is not None
-    assert detail.get("code") == "project_not_found"

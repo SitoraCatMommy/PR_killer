@@ -242,3 +242,4 @@ pytest
 ## License
 
 Proprietary / your choice — add a `LICENSE` file as needed.
+# PR_killer

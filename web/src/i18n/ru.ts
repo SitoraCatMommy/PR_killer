@@ -1,4 +1,5 @@
 import type { EntityType, SourceType } from '../api/types';
+import { batchStrings } from './batchStrings';
 
 /** Подписи типов единиц; «подтверждающий факт» не используем как PR-единицу в интерфейсе. */
 export const ENTITY_TYPE_RU: Record<EntityType, string> = {
@@ -51,6 +52,7 @@ export const ru = {
     next: 'Далее',
     save: 'Сохранить',
     cancel: 'Отмена',
+    retry: 'Повторить',
     optional: 'необязательно',
     errorGeneric: 'Что-то пошло не так',
     apiAddress: 'Адрес API',
@@ -294,7 +296,95 @@ export const ru = {
     chunkCollapse: 'Свернуть',
     partsCountShort: (n: number) => `${n} фрагм.`,
     insightsCountShort: (n: number) => `${n} инс.`,
+    analysisSection: 'Анализ проекта',
+    analysisIntro:
+      'Загрузите все интервью (текст и аудио) в проект и запустите обработку — отчёты и PR-аналитика считаются по всему проекту.',
+    analysisBulkUpload: 'Загрузить файлы (текст + аудио)',
+    analysisRunOnUpload: 'Запустить обработку после загрузки',
+    analysisProcessAll: 'Обработать все источники',
+    analysisUploadOk: (n: number) => `Загружено файлов: ${n}.`,
+    analysisUploadSkippedTooLarge: (n: number) =>
+      `Пропущено файлов (больше 100 МБ): ${n}.`,
+    analysisUploadSkippedOverCap: (n: number) =>
+      `Пропущено файлов (лимит 100 за раз): ${n}.`,
+    analysisUploadProcessing: 'Идёт обработка загруженных файлов…',
+    analysisQueuePending: (n: number) => `в очереди: ${n}`,
+    analysisQueueProcessing: (n: number) => `в работе: ${n}`,
+    analysisQueueDone: (n: number) => `готово: ${n}`,
+    analysisQueued: 'Очередь обработки запущена.',
+    projectDashboardSection: 'Сводный дашборд проекта',
+    projectDashboardIntro:
+      'Агрегация по всем документам и аудио проекта (не только по одному batch). Обновляется при опросе страницы во время обработки.',
+    projectDashboardSources: 'Источников в сводке',
+    projectDashboardEntities: 'Единиц в выборке',
+    projectDashboardInterviews: 'Интервью (оценка)',
+    reportLangRu: 'Русский',
+    reportLangUz: 'Узбекский',
+    reportLangEn: 'Английский',
+    audioLangAuto: 'Авто',
+    audioLangRu: 'Русский',
+    audioLangUz: 'Узбекский',
+    audioLangEn: 'Английский',
   },
+
+  transcriptionPage: {
+    crumb: 'Транскрибация',
+    title: 'Транскрибация аудио',
+    lede: 'Загрузите файл — получите текст и экспорт TXT/DOCX. Раздел использует служебный проект для хранения файлов.',
+    sinkNote:
+      'Проект «Транскрибация — загрузки» создаётся автоматически; его можно найти в списке проектов.',
+    flowStep1: 'Загрузить аудио',
+    flowStep2: 'Дождаться расшифровки',
+    flowStep3: 'Скачать текст или открыть карточку файла',
+    cardTitle: 'Загрузка',
+    cardDescription: 'Выберите язык интервью (или авто) и файл.',
+    interviewLanguageLabel: 'Язык интервью',
+    chooseFile: 'Выбрать аудиофайл',
+    uploadOk: 'Файл принят.',
+    autoStartNote: 'Расшифровка запущена автоматически — статус ниже.',
+    resultTitle: 'Результат',
+    resultDescription: 'Пайплайн сегментов и текст расшифровки.',
+    openDetailPage: 'Открыть страницу аудио',
+    asrHint: 'Расшифровка аудио (сегментный пайплайн). Дождитесь статуса «Готово», затем при необходимости экспорт или инсайты.',
+    statusNoTranscript: 'Нет расшифровки',
+  },
+
+  pipeline: {
+    title: 'Пайплайн расшифровки',
+    processingBanner: 'Идёт обработка аудио и расшифровки…',
+    chunksLabel: 'Фрагменты',
+    chunksPreparing: 'Готовим фрагменты для расшифровки…',
+    transcriptLineLabel: 'Статус расшифровки',
+    errorTitle: 'Ошибка пайплайна',
+    retrying: 'Повтор…',
+    audioStage: (stage: string) => {
+      const m: Record<string, string> = {
+        uploaded: 'Загружено',
+        splitting: 'Разбиение',
+        transcribing: 'Расшифровка',
+        merging: 'Сборка',
+        ready: 'Готово',
+        failed: 'Ошибка',
+        unknown: 'Неизвестно',
+      };
+      return m[stage.toLowerCase()] ?? stage;
+    },
+    chunksLine: (done: number, total: number, failed: number) =>
+      `${done}/${total}${failed ? ` · ошибок фрагментов: ${failed}` : ''}`,
+    transcriptStatus: (status: string) => {
+      const m: Record<string, string> = {
+        pending: 'В очереди',
+        queued: 'В очереди',
+        running: 'Выполняется',
+        completed: 'Готово',
+        failed: 'Ошибка',
+        cancelled: 'Отменено',
+      };
+      return m[status.toLowerCase()] ?? status;
+    },
+  },
+
+  batch: batchStrings,
   sourceDoc: {
     crumb: 'Документ',
     project: 'Проект',
@@ -315,11 +405,20 @@ export const ru = {
     segments: 'Фрагменты расшифровки',
     textParts: 'Частей текста',
     transcribe: 'Расшифровать аудио',
+    transcribeOnlyNote:
+      'Только расшифровка: без автоматических инсайтов по проекту — используйте экспорт или отправку в batch.',
     chunkTranscript: 'Разбить расшифровку',
     chunkTranscriptSemantic: 'Смысловые части (ИИ)',
     insightsFromT: 'Получить инсайты',
     transcript: 'Расшифровка',
     sample: 'Пример фрагментов',
+    downloadTxt: 'Скачать TXT',
+    downloadDocx: 'Скачать DOCX',
+    promoteTitle: 'Отправить расшифровку в проект',
+    promoteBatchHint: 'Необязательно: UUID batch — документ попадёт в выбранный research batch.',
+    promoteBatchPlaceholder: 'research_batch_id (UUID) или пусто',
+    promoteRunning: 'Отправляем…',
+    promoteSend: 'Создать документ из расшифровки',
   },
   pipelineStatus: {
     pending: 'В ожидании',

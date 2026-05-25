@@ -2,14 +2,15 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Index, String, Text, func
+from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.domain.enums import SourceType
+from app.domain.enums import SourceProcessingStatus, SourceType
 from app.models.base import Base, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from app.models.interview_unit import InterviewUnit
     from app.models.project import Project
     from app.models.text_chunk import TextChunk
 
@@ -18,6 +19,7 @@ class SourceDocument(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "source_documents"
     __table_args__ = (
         Index("ix_source_documents_project_id_created_at", "project_id", "created_at"),
+        Index("ix_source_documents_project_processing", "project_id", "processing_status"),
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(
@@ -35,6 +37,17 @@ class SourceDocument(Base, UUIDPrimaryKeyMixin):
         index=True,
     )
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline_state_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    processing_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=SourceProcessingStatus.IDLE.value,
+        index=True,
+    )
+    processing_sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processing_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processing_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -44,6 +57,10 @@ class SourceDocument(Base, UUIDPrimaryKeyMixin):
 
     project: Mapped["Project"] = relationship(back_populates="source_documents")
     text_chunks: Mapped[list["TextChunk"]] = relationship(
+        back_populates="source_document",
+        cascade="all, delete-orphan",
+    )
+    interview_units: Mapped[list["InterviewUnit"]] = relationship(
         back_populates="source_document",
         cascade="all, delete-orphan",
     )

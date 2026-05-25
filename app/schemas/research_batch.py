@@ -47,7 +47,7 @@ class ResearchBatchSourceItemRead(BaseModel):
     source_document_id: UUID | None
     source_audio_id: UUID | None
     created_at: datetime
-    processing_status: str = "completed"
+    processing_status: str = "idle"
     sort_order: int = 0
     last_error: str | None = None
     started_at: datetime | None = None
@@ -70,8 +70,20 @@ class ResearchBatchRead(BaseModel):
     updated_at: datetime
 
 
+class ResearchBatchQueueSummary(BaseModel):
+    """Per-batch source queue counts (``research_batch_sources.processing_status``)."""
+
+    idle: int = 0
+    pending: int = 0
+    processing: int = 0
+    completed: int = 0
+    failed: int = 0
+    currently_processing_row_id: UUID | None = None
+
+
 class ResearchBatchDetailRead(ResearchBatchRead):
     sources: list[ResearchBatchSourceItemRead] = Field(default_factory=list)
+    queue_summary: ResearchBatchQueueSummary
 
 
 class ResearchBatchListResponse(BaseModel):

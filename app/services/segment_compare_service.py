@@ -226,6 +226,18 @@ def _build_differences_and_pr(
             return en
         return ru
 
+    def _signal_example(side: dict[str, Any]) -> str:
+        rows = side.get("top_insights") or []
+        if not isinstance(rows, list):
+            return ""
+        for row in rows[:6]:
+            if not isinstance(row, dict):
+                continue
+            text = str(row.get("text") or row.get("label") or "").strip()
+            if len(text) >= 24:
+                return text[:240]
+        return ""
+
     common_t = topics_a & topics_b
     only_a_t = topics_a - topics_b
     only_b_t = topics_b - topics_a
@@ -233,9 +245,11 @@ def _build_differences_and_pr(
         {
             "dimension": "topics",
             "summary": _t(
-                f"Общие темы ({len(common_t)}): {', '.join(sorted(common_t)[:6]) or '—'}. "
-                f"Сильнее только в «{side_a['segment_key']}»: {', '.join(sorted(only_a_t)[:5]) or '—'}. "
-                f"Только в «{side_b['segment_key']}»: {', '.join(sorted(only_b_t)[:5]) or '—'}.",
+                f"Оба сегмента говорят о {', '.join(sorted(common_t)[:4]) or 'похожих темах'}, "
+                f"но акценты расходятся: у «{side_a['segment_key']}» заметнее "
+                f"{', '.join(sorted(only_a_t)[:3]) or 'общий фон'}, а у «{side_b['segment_key']}» — "
+                f"{', '.join(sorted(only_b_t)[:3]) or 'тот же набор тем'}. "
+                f"{_signal_example(side_a) or _signal_example(side_b)}",
                 f"Umumiy mavzular ({len(common_t)}): {', '.join(sorted(common_t)[:6]) or '—'}. "
                 f"Faqat «{side_a['segment_key']}»: {', '.join(sorted(only_a_t)[:5]) or '—'}. "
                 f"Faqat «{side_b['segment_key']}»: {', '.join(sorted(only_b_t)[:5]) or '—'}.",
@@ -251,9 +265,10 @@ def _build_differences_and_pr(
         {
             "dimension": "problems",
             "summary": _t(
-                f"Пересечение проблем/потребностей: {len(common_p)} совпадений по формулировкам. "
-                f"Уникальные у «{side_a['segment_key']}»: {len(prob_a - prob_b)}, "
-                f"у «{side_b['segment_key']}»: {len(prob_b - prob_a)}.",
+                f"Проблемы частично пересекаются ({len(common_p)} совпадений), но звучат по-разному: "
+                f"в «{side_a['segment_key']}» есть {len(prob_a - prob_b)} уникальных тревог, "
+                f"в «{side_b['segment_key']}» — {len(prob_b - prob_a)}. "
+                f"{_signal_example(side_a) or _signal_example(side_b)}",
                 f"Muammolar kesishmasi: {len(common_p)}. "
                 f"«{side_a['segment_key']}» uchun noyob: {len(prob_a - prob_b)}, "
                 f"«{side_b['segment_key']}» uchun: {len(prob_b - prob_a)}.",
@@ -270,8 +285,10 @@ def _build_differences_and_pr(
         {
             "dimension": "risks",
             "summary": _t(
-                f"Риски только в «{side_a['segment_key']}»: {', '.join(sorted(only_a_r)[:6]) or '—'}. "
-                f"Только в «{side_b['segment_key']}»: {', '.join(sorted(only_b_r)[:6]) or '—'}.",
+                f"Рисковый профиль различается: у «{side_a['segment_key']}» отдельно всплывает "
+                f"{', '.join(sorted(only_a_r)[:3]) or 'нет уникального риска'}, у «{side_b['segment_key']}» — "
+                f"{', '.join(sorted(only_b_r)[:3]) or 'нет уникального риска'}. "
+                f"{_signal_example(side_a) or _signal_example(side_b)}",
                 f"Faqat «{side_a['segment_key']}» xavflari: {', '.join(sorted(only_a_r)[:6]) or '—'}. "
                 f"Faqat «{side_b['segment_key']}»: {', '.join(sorted(only_b_r)[:6]) or '—'}.",
                 f"Risks only in {side_a['segment_key']}: {', '.join(sorted(only_a_r)[:6]) or '—'}. "

@@ -17,6 +17,10 @@ const router = createBrowserRouter([
       { index: true, element: <HomePage /> },
       { path: 'projects', element: <ProjectsPage /> },
       { path: 'projects/:projectId', element: <ProjectDetailPage /> },
+      {
+        path: 'projects/:projectId/batches/:batchId',
+        element: <Navigate to=".." replace />,
+      },
       { path: 'sources/documents/:documentId', element: <SourceDocumentPage /> },
       { path: 'sources/audios/:audioId', element: <SourceAudioPage /> },
       { path: 'materials', element: <MaterialsPage /> },

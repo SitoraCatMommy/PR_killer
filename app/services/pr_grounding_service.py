@@ -140,4 +140,34 @@ def build_pr_grounding(
                     "evidence": ev,
                 }
             )
+    if not rows:
+        for raw in strategy.get("action_cards") or []:
+            if not isinstance(raw, dict):
+                continue
+            msg = str(raw.get("message") or raw.get("action") or "").strip()
+            if len(msg) < 8:
+                continue
+            ev_raw = raw.get("evidence_refs") if isinstance(raw.get("evidence_refs"), list) else []
+            norm: list[dict[str, Any]] = []
+            for it in ev_raw:
+                if not isinstance(it, dict):
+                    continue
+                if str(it.get("quote") or "").strip():
+                    norm.append(it)
+                elif str(it.get("text") or "").strip():
+                    norm.append({**it, "quote": str(it.get("text") or "").strip()[:900]})
+            if len(norm) < 2:
+                ev2 = _pick_evidence_for_text(msg, quotes, min_n=2, max_n=5)
+                norm = ev2
+            if len(norm) < 2:
+                continue
+            rows.append(
+                {
+                    "insight_id": str(uuid.uuid4()),
+                    "insight": msg[:2000],
+                    "insight_kind": "action_card",
+                    "insight_type": "action_card",
+                    "evidence": norm[:5],
+                }
+            )
     return rows

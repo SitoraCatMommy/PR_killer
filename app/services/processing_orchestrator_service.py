@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.domain.enums import JobStatus
@@ -96,12 +96,22 @@ class ProcessingOrchestratorService:
         *,
         strategy: Literal["fixed", "openai"] = "fixed",
     ) -> int:
-        doc = session.get(SourceDocument, source_document_id)
+        stmt = select(SourceDocument).where(SourceDocument.id == source_document_id).with_for_update()
+        doc = session.scalar(stmt)
         if doc is None:
             raise ValueError("source_document_not_found")
         raw = (doc.raw_text or "").strip()
         if not raw:
             raise ValueError("source_document_no_text")
+
+        existing = int(
+            session.scalar(
+                select(func.count()).select_from(TextChunk).where(TextChunk.source_document_id == source_document_id)
+            )
+            or 0
+        )
+        if existing > 0:
+            return existing
 
         session.execute(delete(TextChunk).where(TextChunk.source_document_id == source_document_id))
         session.flush()

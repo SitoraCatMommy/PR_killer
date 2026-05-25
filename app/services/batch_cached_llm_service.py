@@ -31,6 +31,7 @@ from app.services.data_readiness_service import insufficient_synthesis_message
 from app.services.explainability_service import explainability_bundle
 from app.services.decision_layer_service import build_impact_effort_matrix, parse_alerts, parse_priority_actions
 from app.services.audience_portrait_service import build_portrait_context, generate_audience_portrait
+from app.services.batch_data_fingerprint import compute_batch_corpora_fingerprint
 from app.services.custdev_report_bundle import build_custdev_bundle, build_pr_risk_alerts_v2
 from app.services.evidence_driven_bundle import dashboard_first_bundle, evidence_insights_from_grounding
 from app.services.pr_strategy_service import generate_pr_strategy
@@ -49,12 +50,16 @@ def make_cache_key(
     output_language: str,
     *,
     multi_interview_mode: bool | None = None,
+    data_revision: str | None = None,
 ) -> str:
     gb = (group_by or "").strip() or "_"
     sv = (segment_value or "").strip() or "_"
     lg = (output_language or "ru").strip().lower()[:8]
     mi = "sf_" if multi_interview_mode is None else ("sf1" if multi_interview_mode else "sf0")
+    rev = (data_revision or "").strip()[:48]
     raw = f"{kind}:{batch_id}:{gb}:{sv}:{lg}:{mi}"
+    if rev:
+        raw = f"{raw}:r:{rev}"
     if len(raw) > 720:
         h = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         return f"{kind}:{batch_id}:h:{h}"
@@ -233,6 +238,7 @@ async def get_or_create_audience_portrait_response(
 ) -> AudiencePortraitResponse:
     st = settings or get_settings()
     repo = BatchLlmCacheRepository(session)
+    fp = await compute_batch_corpora_fingerprint(session, batch)
     key = make_cache_key(
         CACHE_KIND_PORTRAIT,
         batch.id,
@@ -240,6 +246,7 @@ async def get_or_create_audience_portrait_response(
         segment_value,
         output_language,
         multi_interview_mode=getattr(batch, "single_file_multi_interview_mode", True),
+        data_revision=fp,
     )
     if not recalculate:
         row = await repo.get_by_cache_key(key)
@@ -282,6 +289,7 @@ async def get_or_create_pr_strategy_response(
 ) -> PRStrategyResponse:
     st = settings or get_settings()
     repo = BatchLlmCacheRepository(session)
+    fp = await compute_batch_corpora_fingerprint(session, batch)
     key = make_cache_key(
         CACHE_KIND_STRATEGY,
         batch.id,
@@ -289,6 +297,7 @@ async def get_or_create_pr_strategy_response(
         segment_value,
         output_language,
         multi_interview_mode=getattr(batch, "single_file_multi_interview_mode", True),
+        data_revision=fp,
     )
     if not recalculate:
         row = await repo.get_by_cache_key(key)

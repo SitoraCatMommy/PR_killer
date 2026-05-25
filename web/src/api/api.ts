@@ -1,5 +1,9 @@
-import { apiJson, buildQuery } from './client';
+import { ApiError, apiJson, buildQuery } from './client';
+import { getApiBaseUrl } from '../config';
 import type {
+  BatchAudioPipelineResponse,
+  BatchDashboardData,
+  AudioPipelineProgressRead,
   BulkUploadResponse,
   DashboardAggregateRead,
   EntityListResponse,
@@ -362,4 +366,456 @@ export async function recomputeDashboardAggregates(): Promise<MessageResponse> {
   return apiJson<MessageResponse>('/dashboard/aggregates/recompute', {
     method: 'POST',
   });
+}
+
+// --- Research batches & project-wide dashboard ---
+
+export type DashboardQueryOpts = {
+  group_by?: string | null;
+  segment_key?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  stopwords?: boolean;
+  compare_segment_a?: string | null;
+  compare_segment_b?: string | null;
+};
+
+export function batchDashboardQueryKey(opts: DashboardQueryOpts): string {
+  return JSON.stringify(opts);
+}
+
+function dashboardQueryRecord(opts: DashboardQueryOpts) {
+  return {
+    group_by: opts.group_by ?? undefined,
+    segment_key: opts.segment_key ?? undefined,
+    date_from: opts.date_from ?? undefined,
+    date_to: opts.date_to ?? undefined,
+    stopwords: opts.stopwords,
+    compare_segment_a: opts.compare_segment_a ?? undefined,
+    compare_segment_b: opts.compare_segment_b ?? undefined,
+  };
+}
+
+export type BatchBulkUploadResultItem = {
+  source_kind: 'document' | 'audio';
+  source_row_id: string;
+  source_document_id?: string | null;
+  source_audio_id?: string | null;
+};
+
+export type BatchBulkUploadResponse = {
+  created: BatchBulkUploadResultItem[];
+  pipeline_task_ids: string[];
+};
+
+export type ResearchBatchRead = {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  output_language?: string | null;
+  single_file_multi_interview_mode?: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ResearchBatchQueueSummary = {
+  idle: number;
+  pending: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  currently_processing_row_id?: string | null;
+};
+
+export type ResearchBatchSourceRow = {
+  id?: string;
+  source_kind?: string;
+  source_document_id?: string | null;
+  source_audio_id?: string | null;
+  processing_status?: string;
+  last_error?: string | null;
+  [key: string]: unknown;
+};
+
+export type ResearchBatchDetailRead = ResearchBatchRead & {
+  sources: ResearchBatchSourceRow[];
+  queue_summary: ResearchBatchQueueSummary;
+};
+
+export type ResearchBatchListResponse = {
+  items: ResearchBatchRead[];
+  meta: { total: number; limit: number; offset: number };
+};
+
+async function fetchAttachment(path: string, filename: string): Promise<void> {
+  const res = await fetch(`${getApiBaseUrl()}${path}`);
+  if (!res.ok) {
+    let detail: unknown = res.statusText;
+    try {
+      detail = await res.json();
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function createProjectBatch(
+  projectId: string,
+  body: { name: string; description?: string | null },
+): Promise<ResearchBatchRead> {
+  return apiJson<ResearchBatchRead>(`/projects/${projectId}/batches`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listProjectBatches(
+  projectId: string,
+  offset = 0,
+  limit = 50,
+): Promise<ResearchBatchListResponse> {
+  return apiJson<ResearchBatchListResponse>(
+    `/projects/${projectId}/batches${buildQuery({ offset, limit })}`,
+  );
+}
+
+export async function getProjectDashboard(
+  projectId: string,
+  opts: DashboardQueryOpts = {},
+): Promise<BatchDashboardData> {
+  return apiJson<BatchDashboardData>(
+    `/projects/${projectId}/dashboard${buildQuery(dashboardQueryRecord(opts))}`,
+  );
+}
+
+export async function bulkUploadProjectSources(
+  projectId: string,
+  files: File[],
+  metadataJson: Record<string, unknown>,
+  runAnalysis: boolean,
+  options?: { invalidateLlmCache?: boolean },
+): Promise<BatchBulkUploadResponse> {
+  const fd = new FormData();
+  files.forEach((f) => fd.append('files', f));
+  fd.append('metadata_json', JSON.stringify(metadataJson));
+  fd.append('run_analysis', runAnalysis ? 'true' : 'false');
+  if (options?.invalidateLlmCache === false) {
+    fd.append('invalidate_llm_cache', 'false');
+  }
+  return apiJson<BatchBulkUploadResponse>(`/projects/${projectId}/sources/bulk-upload`, {
+    method: 'POST',
+    body: fd,
+  });
+}
+
+export async function queueProcessProject(projectId: string): Promise<ProcessingTaskQueued> {
+  return apiJson<ProcessingTaskQueued>(`/projects/${projectId}/process`, { method: 'POST' });
+}
+
+export type ProjectProcessingQueueResponse = {
+  idle: number;
+  pending: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  currently_processing: { kind: string; id: string }[];
+  sources: {
+    kind: string;
+    id: string;
+    filename: string;
+    processing_status: string;
+    processing_last_error: string | null;
+  }[];
+};
+
+export async function getProjectProcessingQueue(
+  projectId: string,
+): Promise<ProjectProcessingQueueResponse> {
+  return apiJson<ProjectProcessingQueueResponse>(`/projects/${projectId}/processing-queue`);
+}
+
+export async function recoverProjectDocumentPipeline(projectId: string): Promise<{
+  queued_document_ids: string[];
+  skipped_document_ids: string[];
+  pipeline_task_ids: string[];
+}> {
+  return apiJson(`/projects/${projectId}/documents/recover-pipeline`, { method: 'POST' });
+}
+
+export async function getProjectAudiencePortrait(
+  projectId: string,
+  params: {
+    recalculate?: boolean;
+    group_by?: string | null;
+    segment_value?: string | null;
+  } = {},
+): Promise<any> {
+  return apiJson<any>(
+    `/projects/${projectId}/audience-portrait${buildQuery({
+      recalculate: params.recalculate,
+      group_by: params.group_by ?? undefined,
+      segment_value: params.segment_value ?? undefined,
+    })}`,
+  );
+}
+
+export async function getProjectPRStrategy(
+  projectId: string,
+  params: {
+    recalculate?: boolean;
+    group_by?: string | null;
+    segment_value?: string | null;
+  } = {},
+): Promise<any> {
+  return apiJson<any>(
+    `/projects/${projectId}/pr-strategy${buildQuery({
+      recalculate: params.recalculate,
+      group_by: params.group_by ?? undefined,
+      segment_value: params.segment_value ?? undefined,
+    })}`,
+  );
+}
+
+export async function getProjectFullReport(
+  projectId: string,
+  params: { recalculate?: boolean } = {},
+): Promise<any> {
+  return apiJson<any>(
+    `/projects/${projectId}/full-report${buildQuery({ recalculate: params.recalculate })}`,
+  );
+}
+
+export async function createProjectPublicLink(projectId: string): Promise<{ token: string; report_path: string }> {
+  return apiJson<{ token: string; report_path: string }>(`/projects/${projectId}/public-link`, {
+    method: 'POST',
+  });
+}
+
+export async function getBatch(batchId: string): Promise<ResearchBatchDetailRead> {
+  return apiJson<ResearchBatchDetailRead>(`/batches/${batchId}`);
+}
+
+export async function patchResearchBatch(
+  batchId: string,
+  body: Partial<{
+    name: string;
+    description: string | null;
+    output_language: string | null;
+    single_file_multi_interview_mode: boolean;
+  }>,
+): Promise<ResearchBatchRead> {
+  return apiJson<ResearchBatchRead>(`/batches/${batchId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function bulkUploadBatchSources(
+  batchId: string,
+  files: File[],
+  metadataJson: Record<string, unknown>,
+  runAnalysis: boolean,
+  options?: { invalidateLlmCache?: boolean },
+): Promise<BatchBulkUploadResponse> {
+  const fd = new FormData();
+  files.forEach((f) => fd.append('files', f));
+  fd.append('metadata_json', JSON.stringify(metadataJson));
+  fd.append('run_analysis', runAnalysis ? 'true' : 'false');
+  if (options?.invalidateLlmCache === false) {
+    fd.append('invalidate_llm_cache', 'false');
+  }
+  return apiJson<BatchBulkUploadResponse>(`/batches/${batchId}/sources/bulk-upload`, {
+    method: 'POST',
+    body: fd,
+  });
+}
+
+export async function addBatchSource(
+  batchId: string,
+  body: { source_document_id?: string; source_audio_id?: string },
+): Promise<Record<string, unknown>> {
+  return apiJson<Record<string, unknown>>(`/batches/${batchId}/sources`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function removeBatchSource(batchId: string, sourceRowId: string): Promise<void> {
+  return apiJson<void>(`/batches/${batchId}/sources/${sourceRowId}`, { method: 'DELETE' });
+}
+
+export async function getBatchDashboard(
+  batchId: string,
+  opts: DashboardQueryOpts = {},
+): Promise<BatchDashboardData> {
+  return apiJson<BatchDashboardData>(
+    `/batches/${batchId}/dashboard${buildQuery(dashboardQueryRecord(opts))}`,
+  );
+}
+
+export function batchChartSvgUrl(
+  batchId: string,
+  chartKind: 'topics' | 'problems' | 'risks' | 'pr_taxonomy',
+  opts: DashboardQueryOpts,
+): string {
+  const q = buildQuery(dashboardQueryRecord(opts));
+  return `${getApiBaseUrl()}/batches/${batchId}/charts/${chartKind}.svg${q}`;
+}
+
+export async function downloadBatchDashboardCsv(
+  batchId: string,
+  opts: DashboardQueryOpts,
+): Promise<void> {
+  const q = buildQuery(dashboardQueryRecord(opts));
+  await fetchAttachment(`/batches/${batchId}/dashboard-export.csv${q}`, `batch_${batchId}_dashboard.csv`);
+}
+
+export async function downloadBatchDashboardPack(
+  batchId: string,
+  opts: DashboardQueryOpts,
+): Promise<void> {
+  const q = buildQuery(dashboardQueryRecord(opts));
+  await fetchAttachment(`/batches/${batchId}/dashboard-pack.zip${q}`, `batch_${batchId}_pack.zip`);
+}
+
+export async function getBatchAudioPipeline(batchId: string): Promise<BatchAudioPipelineResponse> {
+  return apiJson<BatchAudioPipelineResponse>(`/batches/${batchId}/audio-pipeline`);
+}
+
+export async function getBatchCorpus(batchId: string, maxChars: number): Promise<any> {
+  return apiJson<any>(
+    `/batches/${batchId}/corpus${buildQuery({ max_chars: maxChars })}`,
+  );
+}
+
+export async function getBatchInterviewUnits(batchId: string): Promise<{ items: unknown[] }> {
+  return apiJson<{ items: unknown[] }>(`/batches/${batchId}/interview-units`);
+}
+
+export async function getAudiencePortrait(
+  batchId: string,
+  params: {
+    recalculate?: boolean;
+    group_by?: string | null;
+    segment_value?: string | null;
+  } = {},
+): Promise<any> {
+  return apiJson<any>(
+    `/batches/${batchId}/audience-portrait${buildQuery({
+      recalculate: params.recalculate,
+      group_by: params.group_by ?? undefined,
+      segment_value: params.segment_value ?? undefined,
+    })}`,
+  );
+}
+
+export async function getPRStrategy(
+  batchId: string,
+  params: {
+    recalculate?: boolean;
+    group_by?: string | null;
+    segment_value?: string | null;
+  } = {},
+): Promise<any> {
+  return apiJson<any>(
+    `/batches/${batchId}/pr-strategy${buildQuery({
+      recalculate: params.recalculate,
+      group_by: params.group_by ?? undefined,
+      segment_value: params.segment_value ?? undefined,
+    })}`,
+  );
+}
+
+export async function getBatchFullReport(
+  batchId: string,
+  params: { recalculate?: boolean } = {},
+): Promise<any> {
+  return apiJson<any>(
+    `/batches/${batchId}/full-report${buildQuery({ recalculate: params.recalculate })}`,
+  );
+}
+
+export async function getBatchScenarioReport(
+  batchId: string,
+  mode: 'pr_audit' | 'audience' | 'messaging',
+): Promise<any> {
+  return apiJson<any>(
+    `/batches/${batchId}/report${buildQuery({ mode, recalculate: false })}`,
+  );
+}
+
+export async function getBatchSegmentCompare(
+  batchId: string,
+  params: { group_by: string; segment_a: string; segment_b: string },
+): Promise<any> {
+  return apiJson<any>(
+    `/batches/${batchId}/compare${buildQuery({
+      group_by: params.group_by,
+      segment_a: params.segment_a,
+      segment_b: params.segment_b,
+    })}`,
+  );
+}
+
+export async function postMessageLabAnalyze(
+  batchId: string,
+  body: Record<string, unknown>,
+): Promise<any> {
+  return apiJson<any>(`/batches/${batchId}/message-lab/analyze`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function queueBatchReportGenerate(
+  batchId: string,
+  body: { output_language?: string | null },
+): Promise<ProcessingTaskQueued> {
+  return apiJson<ProcessingTaskQueued>(`/batches/${batchId}/report/generate`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function downloadBatchReportExcel(batchId: string): Promise<void> {
+  await fetchAttachment(`/batches/${batchId}/export/excel`, `batch_${batchId}_report.xlsx`);
+}
+
+export async function downloadBatchReportPpt(batchId: string): Promise<void> {
+  await fetchAttachment(`/batches/${batchId}/export/ppt`, `batch_${batchId}_report.pptx`);
+}
+
+export async function getSourceAudioProgress(audioId: string): Promise<AudioPipelineProgressRead> {
+  return apiJson<AudioPipelineProgressRead>(`/sources/audios/${audioId}/progress`);
+}
+
+export async function promoteAudioTranscript(
+  audioId: string,
+  body: { target_project_id: string; research_batch_id?: string | null; filename_stem?: string },
+): Promise<{ source_document_id: string }> {
+  return apiJson<{ source_document_id: string }>(`/sources/audios/${audioId}/transcript/promote`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function downloadAudioTranscriptExport(
+  audioId: string,
+  format: 'txt' | 'docx' = 'txt',
+  downloadFilename?: string,
+): Promise<void> {
+  const ext = format === 'docx' ? 'docx' : 'txt';
+  await fetchAttachment(
+    `/sources/audios/${audioId}/transcript/export${buildQuery({ format })}`,
+    downloadFilename ?? `transcript_${audioId}.${ext}`,
+  );
 }

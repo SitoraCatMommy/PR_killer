@@ -50,12 +50,13 @@ cd web && npm run generate-api  # Regenerate types from OpenAPI schema
 
 ### Processing pipeline
 ```
-Upload → [audio] Transcribe (OpenAI/Gemini) → Chunk (fixed or semantic/OpenAI)
-       → Extract entities (mock or GPT)
-       → Deduplicate by fingerprint
-       → Aggregate snapshots (dashboard JSON)
-       → Generate report (GPT or deterministic)
+Upload → project queue (pending → processing, PROJECT_QUEUE_CONCURRENCY sources at a time)
+       → [audio] Transcribe (OpenAI/Gemini) → Chunk (fixed or semantic/OpenAI)
+       → Extract entities (mock or GPT) → aggregate_project_sync per completed source
+       → When queue idle: single LLM portrait/strategy/full-report over full project corpus
 ```
+
+**Project queue** (replaces batch groups for product flows): status on `source_documents` / `source_audios`; drainer `process_project_processing_queue`; API `GET /projects/{id}/processing-queue`. Batch routes under `/batches` are deprecated — use project bulk upload + `POST /projects/{id}/process`.
 
 ### Key layers
 | Layer | Path | Role |
@@ -89,5 +90,7 @@ All settings are in `app/infrastructure/settings.py` (pydantic-settings). The ke
 - `EXTRACTION_PROVIDER` — `gpt` | `mock`
 - `CHUNKING_STRATEGY` — `fixed` | `semantic`
 - `SUMMARY_PROVIDER` — controls report generation backend
+- `PROJECT_QUEUE_ENABLED` — `true` (default): limited parallel queue; `false`: legacy fan-out all sources
+- `PROJECT_QUEUE_CONCURRENCY` — default `1` (raise to `2`–`3` for faster throughput)
 
 Copy `.env.example` → `.env` and populate API keys before running.

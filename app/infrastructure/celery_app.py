@@ -14,6 +14,11 @@ celery_app = Celery(
         "app.workers.tasks.research_extraction",
         "app.workers.tasks.research_aggregate",
         "app.workers.tasks.research_report",
+        "app.workers.tasks.research_source_full_pipeline",
+        "app.workers.tasks.audio_segment_pipeline",
+        "app.workers.tasks.research_batch_report",
+        "app.workers.tasks.batch_processing_queue",
+        "app.workers.tasks.project_processing_queue",
     ],
 )
 

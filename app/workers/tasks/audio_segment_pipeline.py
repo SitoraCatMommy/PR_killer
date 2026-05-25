@@ -20,6 +20,7 @@ from app.models.transcript import Transcript
 from app.models.transcript_segment import TranscriptSegment
 from app.services.audio_segment_split_service import split_audio_into_segment_files
 from app.services.batch_queue_service import maybe_finalize_batch_after_audio_failure
+from app.services.project_queue_service import maybe_finalize_project_after_audio_failure
 from app.services.processing_orchestrator_service import ProcessingOrchestratorService
 from app.services.transcription_service import TranscriptionService
 from app.workers.tasks.research_extraction import extract_entities_for_transcript
@@ -115,6 +116,10 @@ def _try_merge_audio(session, source_audio_id: UUID) -> None:
         audio.audio_pipeline_status = AudioPipelineStatus.FAILED.value
         audio.audio_pipeline_last_error = "All transcription segments failed"
         session.flush()
+        maybe_finalize_project_after_audio_failure(
+            source_audio_id,
+            error_message=audio.audio_pipeline_last_error or "all_segments_failed",
+        )
         maybe_finalize_batch_after_audio_failure(
             source_audio_id,
             error_message=audio.audio_pipeline_last_error or "all_segments_failed",
@@ -150,6 +155,7 @@ def _try_merge_audio(session, source_audio_id: UUID) -> None:
             audio.audio_pipeline_status = AudioPipelineStatus.FAILED.value
             audio.audio_pipeline_last_error = "Merged transcript empty"
         session.flush()
+        maybe_finalize_project_after_audio_failure(source_audio_id, error_message="Merged transcript empty")
         maybe_finalize_batch_after_audio_failure(source_audio_id, error_message="Merged transcript empty")
         return
 

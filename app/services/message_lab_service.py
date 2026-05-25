@@ -10,6 +10,7 @@ from typing import Any
 from openai import OpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings, get_settings
 from app.models.research_batch import ResearchBatch
 from app.schemas.research_batch import MessageLabAnalyzeRequest, MessageLabAnalyzeResponse, MessageLabSegmentReaction
@@ -89,7 +90,8 @@ async def analyze_message_lab(
     key = (st.openai_api_key or "").strip()
     if not key:
         raise ValueError("openai_api_key_missing")
-    client = OpenAI(api_key=key, timeout=120.0)
+    read_s = max(120.0, float(st.openai_http_timeout_seconds))
+    client = OpenAI(api_key=key, timeout=httpx_timeout_for_upstream_read(read_seconds=read_s))
 
     def _call() -> dict[str, Any]:
         completion = client.chat.completions.create(

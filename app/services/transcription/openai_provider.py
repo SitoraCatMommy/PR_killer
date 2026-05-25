@@ -10,6 +10,7 @@ from typing import Any
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, RateLimitError
 
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings
 from app.services.transcription.data import StructuredTranscriptionResult, TranscriptSegmentData
 
@@ -89,9 +90,15 @@ class OpenAITranscriptionProvider:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._model = settings.openai_transcription_model
-        timeout = float(settings.openai_transcription_timeout_seconds)
+        read_budget = max(
+            float(settings.openai_transcription_timeout_seconds),
+            float(settings.openai_http_timeout_seconds),
+        )
         key = (settings.openai_api_key or "").strip()
-        self._client = AsyncOpenAI(api_key=key or None, timeout=timeout)
+        self._client = AsyncOpenAI(
+            api_key=key or None,
+            timeout=httpx_timeout_for_upstream_read(read_seconds=read_budget, connect_seconds=60.0),
+        )
 
     async def transcribe_structured(
         self,

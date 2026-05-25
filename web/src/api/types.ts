@@ -3,7 +3,10 @@ import type { components } from './schema';
 export type Schemas = components['schemas'];
 
 export type HealthResponse = Schemas['HealthResponse'];
-export type ProjectRead = Schemas['ProjectRead'];
+export type ProjectRead = Schemas['ProjectRead'] & {
+  /** Present once OpenAPI schema includes `output_language`. */
+  output_language?: string | null;
+};
 export type ProjectCreate = Schemas['ProjectCreate'];
 export type ProjectListResponse = Schemas['ProjectListResponse'];
 export type SourceDocumentRead = Schemas['SourceDocumentRead'];
@@ -131,6 +134,14 @@ export type PRAnalysisReadiness = {
   aggregation_exists: boolean;
   min_pr_entity_count: number;
   sources: PRAnalysisReadinessSource[];
+  queue_summary?: {
+    idle?: number;
+    pending?: number;
+    processing?: number;
+    completed?: number;
+    failed?: number;
+    currently_processing?: { kind: string; id: string }[];
+  };
 };
 export type ResearchSummaryRead = Schemas['ResearchSummaryRead'];
 export type MaterialRead = Schemas['MaterialRead'];
@@ -174,4 +185,158 @@ export type ResearchAggregationSnapshotRead = {
 
 export type ResearchAggregationSnapshotResponse = {
   snapshot: ResearchAggregationSnapshotRead | null;
+};
+
+// --- Batch / dashboard frontend shapes (backend JSON; keep permissive where needed) ---
+
+export type OutputLanguage = 'ru' | 'uz' | 'en';
+export type TranscriptionLanguageOption = 'auto' | 'ru' | 'uz' | 'en';
+export type ReportMode = 'pr_audit' | 'audience' | 'messaging';
+
+export type TracedNavRef = {
+  kind?: string;
+  document_id?: string;
+  audio_id?: string;
+  transcript_id?: string | null;
+  chunk_id?: string | null;
+};
+
+export type TracedSourceRef = {
+  nav?: TracedNavRef;
+  entity_id?: string | null;
+  source_document_id?: string | null;
+  source_audio_id?: string | null;
+  transcript_id?: string | null;
+  chunk_id?: string | null;
+};
+
+export type TracedLabelRow = {
+  label: string;
+  count: number;
+  pr_signal_type?: string;
+  entity_type?: string;
+  source_refs: TracedSourceRef[];
+};
+
+export type BatchDashboardTraced = {
+  topics?: TracedLabelRow[];
+  problems?: TracedLabelRow[];
+  risks?: TracedLabelRow[];
+};
+
+export type PortraitFieldKey =
+  | 'decision_making'
+  | 'fears'
+  | 'trust_drivers'
+  | 'pain_points'
+  | 'language_style'
+  | 'brand_perception'
+  | 'emotional_triggers';
+
+export type PortraitGroundingEvidence = {
+  quote?: string;
+  entity_id?: string | null;
+  source_document_id?: string | null;
+  source_audio_id?: string | null;
+  transcript_id?: string | null;
+};
+
+export type PortraitGroundingItem = {
+  insight?: string;
+  evidence?: PortraitGroundingEvidence[];
+};
+
+export type SampleQuoteItem = PortraitGroundingEvidence & {
+  title?: string;
+};
+
+export type MessageLabAnalyzeResponse = Record<string, unknown>;
+
+export type BatchDataReadinessDiagnostics = {
+  pipelines_still_running?: boolean;
+  /** Chunks exist but no extracted entities yet (or empty extraction); not the same as pipeline running. */
+  entity_extraction_gap?: boolean;
+  interviews_total?: number;
+  interviews_processed?: number;
+  chunks_total?: number;
+  visualization_note?: string;
+  missing_steps?: string[];
+  [key: string]: unknown;
+};
+
+export type DashboardSliceRow = { label: string; value: number; pct?: number | null };
+
+export type DocumentPipelineRow = {
+  source_document_id: string;
+  filename: string;
+  pipeline: Record<string, unknown>;
+};
+
+export type BatchDashboardData = {
+  batch?: { source_count?: number; name?: string; [key: string]: unknown };
+  topics_pie?: DashboardSliceRow[];
+  problems_bar?: DashboardSliceRow[];
+  risks_bar?: DashboardSliceRow[];
+  top_insights?: Array<{ text?: string; pr_signal_type?: string; type?: string }>;
+  traced?: BatchDashboardTraced;
+  segment_breakdown?: Array<{
+    segment_key: string;
+    entity_count: number;
+    topics_pie: DashboardSliceRow[];
+    problems_bar: DashboardSliceRow[];
+  }>;
+  data_readiness_diagnostics?: BatchDataReadinessDiagnostics | null;
+  data_quality?: Record<string, unknown> & {
+    strict_pr_ready?: boolean;
+    can_synthesize_llm?: boolean;
+    gates_checklist?: Array<Record<string, unknown>>;
+  };
+  evidence_dashboard?: Record<string, unknown>;
+  audience_snapshot?: Record<string, unknown>;
+  filters?: { segment_values?: string[] } & Record<string, unknown>;
+  document_pipelines?: DocumentPipelineRow[];
+  interview_units?: unknown[];
+  word_frequency?: unknown[];
+  timeline_series_real?: unknown[];
+  sentiment?: unknown;
+  top_patterns?: unknown[];
+  insight_graph?: unknown;
+  pr_insight_rollups?: unknown;
+};
+
+export type BatchAudioPipelineItemRead = {
+  source_audio_id: string;
+  filename?: string | null;
+  total_chunks: number;
+  done_chunks: number;
+  failed_chunks?: number;
+  progress_percent?: number;
+  overall_status?: string | null;
+  pipeline_stage?: string | null;
+  current_stage?: string | null;
+  last_error?: string | null;
+};
+
+export type BatchAudioPipelineSummary = {
+  ready?: number;
+  total_audios?: number;
+  in_progress?: number;
+  failed?: number;
+  total_interviews?: number | null;
+  processed_interviews?: number | null;
+  errors_count?: number | null;
+};
+
+export type BatchAudioPipelineResponse = {
+  summary: BatchAudioPipelineSummary;
+  items: BatchAudioPipelineItemRead[];
+};
+
+export type AudioPipelineProgressRead = {
+  overall_status?: string | null;
+  current_stage?: string | null;
+  total_chunks?: number;
+  done_chunks?: number;
+  failed_chunks?: number;
+  last_error?: string | null;
 };

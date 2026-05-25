@@ -9,6 +9,8 @@ from app.api.v1.router import api_router
 from app.infrastructure.database import init_db
 from app.infrastructure.settings import get_settings
 
+import app.models  # noqa: F401 — register all ORM models before first DB request
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:

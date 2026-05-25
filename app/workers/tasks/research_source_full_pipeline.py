@@ -1,4 +1,4 @@
-"""Run chunking + extraction after bulk upload (single worker task, no nested .delay().get())."""
+"""Run chunking + extraction after bulk upload (Celery task; finalizes batch queue rows when applicable)."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from app.infrastructure.celery_app import celery_app
 from app.infrastructure.db_sync import sync_session_scope
 from app.models.source_document import SourceDocument
 from app.models.text_chunk import TextChunk
+from app.services.batch_queue_service import finalize_document_pipeline_task_result
 from app.services.interview_units_sync import sync_interview_units_for_document_sync
 from app.services.research_document_pipeline_sync import record_extraction_outcome, record_pipeline_failure
 from app.workers.tasks.research_extraction import extract_entities_for_document
@@ -49,9 +50,14 @@ def pipeline_document_analysis(source_document_id: str) -> dict:
     from app.workers.tasks.research_processing import chunk_source_document
 
     did = UUID(source_document_id)
+
+    def done(payload: dict[str, Any]) -> dict[str, Any]:
+        finalize_document_pipeline_task_result(did, payload)
+        return payload
+
     info = _peek_document_pipeline_state(did)
     if info.get("missing"):
-        return {"status": "missing", "source_document_id": source_document_id}
+        return done({"status": "missing", "source_document_id": source_document_id})
 
     phase = str(info.get("phase") or "")
     n_ch = int(info.get("n_chunks") or 0)
@@ -61,13 +67,15 @@ def pipeline_document_analysis(source_document_id: str) -> dict:
     if phase == "extracted" and ext_status == "ok" and entities_created > 0:
         logger.info("pipeline_document_analysis: skip already complete doc=%s", source_document_id)
         sync_interview_units_for_document_sync(did)
-        return {
-            "status": "ok",
-            "skipped": "already_complete",
-            "source_document_id": source_document_id,
-            "chunk": {"chunk_count": n_ch, "skipped_chunk": True},
-            "extract": {"status": "skipped", "entities_created": entities_created},
-        }
+        return done(
+            {
+                "status": "ok",
+                "skipped": "already_complete",
+                "source_document_id": source_document_id,
+                "chunk": {"chunk_count": n_ch, "skipped_chunk": True},
+                "extract": {"status": "skipped", "entities_created": entities_created},
+            }
+        )
 
     skip_chunk = (
         n_ch > 0
@@ -94,19 +102,23 @@ def pipeline_document_analysis(source_document_id: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.exception("pipeline_document_analysis: chunk failed doc=%s", source_document_id)
             record_pipeline_failure(did, step="chunk_failed", message=repr(exc))
-            return {
-                "status": "chunk_failed",
-                "source_document_id": source_document_id,
-                "error": repr(exc),
-            }
+            return done(
+                {
+                    "status": "chunk_failed",
+                    "source_document_id": source_document_id,
+                    "error": repr(exc),
+                }
+            )
 
     if r1.get("chunk_status") == "already_processing" or r1.get("status") == "already_processing":
         logger.info("pipeline_document_analysis: chunk busy doc=%s", source_document_id)
-        return {
-            "status": "already_processing",
-            "source_document_id": source_document_id,
-            "chunk": r1,
-        }
+        return done(
+            {
+                "status": "already_processing",
+                "source_document_id": source_document_id,
+                "chunk": r1,
+            }
+        )
 
     cc = int((r1 or {}).get("chunk_count") or 0)
     if cc < 1:
@@ -118,12 +130,14 @@ def pipeline_document_analysis(source_document_id: str) -> dict:
             entities_created=0,
             chunk_count_hint=0,
         )
-        return {
-            "status": "ok",
-            "source_document_id": source_document_id,
-            "chunk": r1,
-            "extract": {"status": "skipped_no_chunks", "entities_created": 0},
-        }
+        return done(
+            {
+                "status": "ok",
+                "source_document_id": source_document_id,
+                "chunk": r1,
+                "extract": {"status": "skipped_no_chunks", "entities_created": 0},
+            }
+        )
 
     sync_interview_units_for_document_sync(did)
     try:
@@ -131,12 +145,14 @@ def pipeline_document_analysis(source_document_id: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.exception("pipeline_document_analysis: extract failed doc=%s", source_document_id)
         record_pipeline_failure(did, step="extraction_failed", message=repr(exc))
-        return {
-            "status": "extraction_failed",
-            "source_document_id": source_document_id,
-            "chunk": r1,
-            "error": repr(exc),
-        }
+        return done(
+            {
+                "status": "extraction_failed",
+                "source_document_id": source_document_id,
+                "chunk": r1,
+                "error": repr(exc),
+            }
+        )
 
     logger.info(
         "pipeline_document_analysis: doc=%s chunk=%s extract=%s",
@@ -144,7 +160,7 @@ def pipeline_document_analysis(source_document_id: str) -> dict:
         r1,
         r2,
     )
-    return {"status": "ok", "source_document_id": source_document_id, "chunk": r1, "extract": r2}
+    return done({"status": "ok", "source_document_id": source_document_id, "chunk": r1, "extract": r2})
 
 
 @celery_app.task(name="app.workers.tasks.research_source_full_pipeline.pipeline_audio_analysis")

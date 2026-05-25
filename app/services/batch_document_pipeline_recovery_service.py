@@ -92,3 +92,26 @@ async def list_batch_documents_needing_recovery(
         else:
             skipped.append(did)
     return queued, skipped
+
+
+async def list_project_documents_needing_recovery(
+    session: AsyncSession,
+    project_id: UUID,
+) -> tuple[list[UUID], list[UUID]]:
+    """Returns ``(queued_ids, skipped_ok_ids)`` for all documents in the project."""
+    docs = list(
+        (
+            await session.scalars(select(SourceDocument).where(SourceDocument.project_id == project_id))
+        ).all()
+    )
+    queued: list[UUID] = []
+    skipped: list[UUID] = []
+    for doc in docs:
+        if document_pipeline_actively_running(doc):
+            skipped.append(doc.id)
+            continue
+        if document_pipeline_needs_recovery(doc):
+            queued.append(doc.id)
+        else:
+            skipped.append(doc.id)
+    return queued, skipped

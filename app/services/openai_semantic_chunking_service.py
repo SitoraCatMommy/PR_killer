@@ -9,6 +9,7 @@ from typing import Any
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError
 
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,11 @@ class OpenAISemanticChunkingService:
             raise ValueError("openai_api_key_missing")
         self._model = self._settings.openai_semantic_chunk_model
         self._window = self._settings.openai_semantic_chunk_window_chars
-        self._client = OpenAI(api_key=key, timeout=120.0)
+        read_s = max(300.0, float(self._settings.openai_http_timeout_seconds))
+        self._client = OpenAI(
+            api_key=key,
+            timeout=httpx_timeout_for_upstream_read(read_seconds=read_s),
+        )
 
     def _windows(self, text: str) -> list[str]:
         if len(text) <= self._window:

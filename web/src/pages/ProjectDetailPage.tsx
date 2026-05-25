@@ -2,12 +2,17 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
+import type { BatchDashboardData } from '../api/types';
 import {
+  batchDashboardQueryKey,
+  bulkUploadProjectSources,
   createRawTextNote,
   deleteProject,
   getPRAnalysisReadiness,
+  getProjectProcessingQueue,
   getProject,
   getProjectAggregation,
+  getProjectDashboard,
   getProjectReport,
   getProjectSummary,
   getSourceAudio,
@@ -15,6 +20,7 @@ import {
   listDocumentChunks,
   listProjectEntities,
   listProjectSources,
+  queueProcessProject,
   queueExtractDocument,
   queueExtractTranscript,
   queueGenerateProjectSummary,
@@ -25,6 +31,11 @@ import {
   uploadAudioSources,
   uploadTextSources,
 } from '../api/api';
+import {
+  DOCUMENT_UPLOAD_ACCEPT,
+  filterBulkUploadFiles,
+  MIXED_UPLOAD_ACCEPT,
+} from '../utils/uploadLimits';
 import type {
   BulkUploadResponse,
   EntityListResponse,
@@ -127,6 +138,28 @@ function bulkUploadStatusText(result: BulkUploadResponse): string {
     return ru.project.uploadPartial(result.succeeded, result.failed);
   }
   return ru.project.uploadOkCount(result.succeeded);
+}
+
+function projectDashboardBatchMeta(dashboard: BatchDashboardData | undefined): {
+  source_count?: number;
+  entity_rows_used?: number;
+} {
+  const b = dashboard?.batch;
+  if (!b || typeof b !== 'object') return {};
+  const o = b as Record<string, unknown>;
+  return {
+    source_count: typeof o.source_count === 'number' ? o.source_count : undefined,
+    entity_rows_used: typeof o.entity_rows_used === 'number' ? o.entity_rows_used : undefined,
+  };
+}
+
+function projectDashboardInterviewEstimate(dashboard: BatchDashboardData | undefined): number | undefined {
+  const ed = dashboard?.evidence_dashboard;
+  if (!ed || typeof ed !== 'object') return undefined;
+  const kpis = (ed as Record<string, unknown>).kpis;
+  if (!kpis || typeof kpis !== 'object') return undefined;
+  const v = (kpis as Record<string, unknown>).processed_interviews_estimate;
+  return typeof v === 'number' ? v : undefined;
 }
 
 function PRReadinessCard({
@@ -371,6 +404,9 @@ export function ProjectDetailPage() {
   const [reportPolling, setReportPolling] = useState(false);
   const [poll, setPoll] = useState<PollState | null>(null);
   const [expandedChunks, setExpandedChunks] = useState<Record<string, boolean>>({});
+  const [runAnalysisOnUpload, setRunAnalysisOnUpload] = useState(true);
+  const [uploadPipelinePoll, setUploadPipelinePoll] = useState(false);
+  const [uploadFilterNotice, setUploadFilterNotice] = useState<string | null>(null);
 
   const entityQueryKey = useMemo(
     () =>
@@ -383,12 +419,33 @@ export function ProjectDetailPage() {
     [entityType, minConfidence, entOffset, showAllEntityTypes],
   );
 
-  const refetchInterval = poll ? POLL_MS : false;
-
   const project = useQuery({
     queryKey: qk.project(projectId),
     queryFn: () => getProject(projectId),
     enabled: !!projectId,
+  });
+
+  const readiness = useQuery({
+    queryKey: qk.prAnalysisReadiness(projectId),
+    queryFn: () => getPRAnalysisReadiness(projectId),
+    enabled: !!projectId,
+    refetchInterval:
+      reportPolling || poll != null || uploadPipelinePoll ? POLL_MS : false,
+  });
+
+  const queueSummary = readiness.data?.queue_summary as
+    | { pending?: number; processing?: number; completed?: number; failed?: number }
+    | undefined;
+  const queueActive =
+    (queueSummary?.pending ?? 0) > 0 || (queueSummary?.processing ?? 0) > 0;
+  const refetchInterval =
+    poll != null || uploadPipelinePoll || queueActive ? POLL_MS : false;
+
+  const processingQueue = useQuery({
+    queryKey: qk.projectProcessingQueue(projectId),
+    queryFn: () => getProjectProcessingQueue(projectId),
+    enabled: !!projectId && (uploadPipelinePoll || queueActive),
+    refetchInterval: uploadPipelinePoll || queueActive ? POLL_MS : false,
   });
 
   const sources = useQuery({
@@ -433,18 +490,39 @@ export function ProjectDetailPage() {
     refetchInterval: reportPolling ? POLL_MS : false,
   });
 
-  const readiness = useQuery({
-    queryKey: qk.prAnalysisReadiness(projectId),
-    queryFn: () => getPRAnalysisReadiness(projectId),
-    enabled: !!projectId,
-    refetchInterval: reportPolling || poll != null ? POLL_MS : false,
-  });
-
   const aggregation = useQuery({
     queryKey: qk.projectAggregation(projectId),
     queryFn: () => getProjectAggregation(projectId),
     enabled: !!projectId,
     refetchInterval,
+  });
+
+  const projectDashKey = useMemo(() => batchDashboardQueryKey({}), []);
+  const projectDashboard = useQuery({
+    queryKey: qk.projectDashboard(projectId, projectDashKey),
+    queryFn: () => getProjectDashboard(projectId, {}),
+    enabled: !!projectId,
+    refetchInterval,
+  });
+
+  const bulkUploadMut = useMutation({
+    mutationFn: (files: File[]) =>
+      bulkUploadProjectSources(projectId, files, {}, runAnalysisOnUpload),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: qk.sources(projectId, srcOffset, PAGE) });
+      await qc.invalidateQueries({ queryKey: qk.projectDashboard(projectId, projectDashKey) });
+      await qc.invalidateQueries({ queryKey: qk.prAnalysisReadiness(projectId) });
+      if (runAnalysisOnUpload) setUploadPipelinePoll(true);
+    },
+  });
+
+  const processProjectMut = useMutation({
+    mutationFn: () => queueProcessProject(projectId),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: qk.sources(projectId, srcOffset, PAGE) });
+      await qc.invalidateQueries({ queryKey: qk.prAnalysisReadiness(projectId) });
+      setUploadPipelinePoll(true);
+    },
   });
 
   const focus = useMemo(() => {
@@ -654,6 +732,19 @@ export function ProjectDetailPage() {
     if (st === 'ready' || st === 'failed') queueMicrotask(() => setReportPolling(false));
   }, [reportPolling, projectReport.data?.report?.status]);
 
+  useEffect(() => {
+    if (!uploadPipelinePoll) return;
+    const t = window.setTimeout(() => setUploadPipelinePoll(false), 120_000);
+    return () => window.clearTimeout(t);
+  }, [uploadPipelinePoll]);
+
+  useEffect(() => {
+    if (!uploadPipelinePoll) return;
+    if (!queueActive && (prReady?.source_count ?? 0) > 0) {
+      queueMicrotask(() => setUploadPipelinePoll(false));
+    }
+  }, [uploadPipelinePoll, queueActive, prReady?.source_count]);
+
   const srcMeta = sources.data?.meta;
   const hasData = (prReady?.source_count ?? srcMeta?.total ?? 0) > 0;
   const hasInsights = (entMeta?.total ?? 0) > 0;
@@ -684,6 +775,7 @@ export function ProjectDetailPage() {
       aggCreated: aggregation.data?.snapshot?.created_at ?? null,
       summary: summary.data,
     });
+  const uploadProcessingBanner = uploadPipelinePoll && !processingBanner;
   const readinessBlockers = prReady?.blocking_reasons ?? [];
   const reportHardBlocked =
     readinessBlockers.includes('no_processable_sources') ||
@@ -706,7 +798,7 @@ export function ProjectDetailPage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="mx-auto max-w-7xl space-y-6 px-1 pb-10 sm:px-0">
       <nav className="text-sm text-muted-foreground">
         <Link to="/projects" className="font-medium text-foreground hover:underline">
           {ru.nav.projects}
@@ -719,7 +811,7 @@ export function ProjectDetailPage() {
       {project.error && <ApiErrorText error={project.error} />}
       {project.data && (
         <>
-          <header className="space-y-3">
+          <header className="space-y-3 border-b border-border/60 pb-6">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0 flex-1 space-y-2">
                 <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -783,6 +875,129 @@ export function ProjectDetailPage() {
             hasReport={hasReport}
             hasSummary={hasSummary}
           />
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-base">{ru.project.analysisSection}</CardTitle>
+                <CardDescription>{ru.project.analysisIntro}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={runAnalysisOnUpload}
+                    onChange={(e) => setRunAnalysisOnUpload(e.target.checked)}
+                    className="size-4 rounded border"
+                  />
+                  {ru.project.analysisRunOnUpload}
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <label className={cn(buttonVariants({ variant: 'default' }), 'cursor-pointer')}>
+                    {bulkUploadMut.isPending ? (
+                      <>
+                        <Loader2 className="mr-2 size-4 animate-spin" />
+                        {ru.project.processingBanner}
+                      </>
+                    ) : (
+                      ru.project.analysisBulkUpload
+                    )}
+                    <input
+                      type="file"
+                      className="sr-only"
+                      accept={MIXED_UPLOAD_ACCEPT}
+                      multiple
+                      disabled={bulkUploadMut.isPending}
+                      onChange={(e) => {
+                        const picked = Array.from(e.target.files ?? []);
+                        const { files, skippedTooLarge, skippedOverCap } =
+                          filterBulkUploadFiles(picked);
+                        const parts: string[] = [];
+                        if (skippedTooLarge > 0) {
+                          parts.push(ru.project.analysisUploadSkippedTooLarge(skippedTooLarge));
+                        }
+                        if (skippedOverCap > 0) {
+                          parts.push(ru.project.analysisUploadSkippedOverCap(skippedOverCap));
+                        }
+                        setUploadFilterNotice(parts.length ? parts.join(' ') : null);
+                        if (files.length) bulkUploadMut.mutate(files);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={processProjectMut.isPending}
+                    onClick={() => processProjectMut.mutate()}
+                  >
+                    {processProjectMut.isPending ? (
+                      <>
+                        <Loader2 className="mr-2 size-4 animate-spin" />
+                        {ru.project.processingBanner}
+                      </>
+                    ) : (
+                      ru.project.analysisProcessAll
+                    )}
+                  </Button>
+                </div>
+                {uploadFilterNotice ? (
+                  <p className="text-sm text-amber-700 dark:text-amber-400">{uploadFilterNotice}</p>
+                ) : null}
+                {bulkUploadMut.error ? <ApiErrorText error={bulkUploadMut.error} /> : null}
+                {processProjectMut.error ? <ApiErrorText error={processProjectMut.error} /> : null}
+                {uploadProcessingBanner || queueActive ? (
+                  <p className="text-sm text-muted-foreground">
+                    {ru.project.analysisUploadProcessing}
+                    {processingQueue.data
+                      ? ` (${ru.project.analysisQueuePending(processingQueue.data.pending)} / ${ru.project.analysisQueueProcessing(processingQueue.data.processing)} / ${ru.project.analysisQueueDone(processingQueue.data.completed)})`
+                      : queueSummary
+                        ? ` (${ru.project.analysisQueuePending(queueSummary.pending ?? 0)} / ${ru.project.analysisQueueProcessing(queueSummary.processing ?? 0)} / ${ru.project.analysisQueueDone(queueSummary.completed ?? 0)})`
+                        : ''}
+                  </p>
+                ) : null}
+                {bulkUploadMut.data && bulkUploadMut.data.created.length > 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    {ru.project.analysisUploadOk(bulkUploadMut.data.created.length)}
+                    {runAnalysisOnUpload ? ` ${ru.project.analysisQueued}` : ''}
+                  </p>
+                ) : null}
+                {processProjectMut.isSuccess ? (
+                  <p className="text-sm text-muted-foreground">{ru.project.analysisQueued}</p>
+                ) : null}
+              </CardContent>
+            </Card>
+
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-base">{ru.project.projectDashboardSection}</CardTitle>
+                <CardDescription>{ru.project.projectDashboardIntro}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {projectDashboard.isPending ? <Skeleton className="h-24 w-full" /> : null}
+                {projectDashboard.error ? <ApiErrorText error={projectDashboard.error} /> : null}
+                {projectDashboard.data ? (
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    {(() => {
+                      const meta = projectDashboardBatchMeta(projectDashboard.data);
+                      const est = projectDashboardInterviewEstimate(projectDashboard.data);
+                      const cells = [
+                        [ru.project.projectDashboardSources, meta.source_count ?? '—'],
+                        [ru.project.projectDashboardEntities, meta.entity_rows_used ?? '—'],
+                        [ru.project.projectDashboardInterviews, est ?? '—'],
+                      ] as const;
+                      return cells.map(([label, value]) => (
+                        <div key={label} className="rounded-md border bg-background p-3">
+                          <p className="text-xs text-muted-foreground">{label}</p>
+                          <p className="text-lg font-semibold">{value}</p>
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+          </div>
 
           {processingBanner && poll && (
             <Alert>
@@ -850,7 +1065,7 @@ export function ProjectDetailPage() {
                   <input
                     type="file"
                     className="sr-only"
-                    accept=".txt,.md,text/*"
+                    accept={DOCUMENT_UPLOAD_ACCEPT}
                     multiple
                     onChange={(e) => {
                       const files = Array.from(e.target.files ?? []);

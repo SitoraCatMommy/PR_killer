@@ -1,7 +1,8 @@
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile, status
+from sqlalchemy import select
 
 from app.api.deps import (
     IngestionServiceDep,
@@ -10,14 +11,16 @@ from app.api.deps import (
     SettingsDep,
     SourceQueryServiceDep,
 )
-from app.api.upload_utils import read_upload_file_with_limit
-from app.domain.enums import SourceType
+from app.api.upload_utils import http_exception_for_ingestion_value_error, read_upload_file_with_limit
+from app.domain.enums import JobStatus, SourceType
 from app.infrastructure.database import DbSession
 from app.infrastructure.settings import get_settings
 from app.models.source_audio import SourceAudio
 from app.models.source_document import SourceDocument
+from app.models.transcript import Transcript
 from app.schemas.common import BulkUploadItemResult, BulkUploadResponse, ErrorResponse
 from app.schemas.processing import ProcessingTaskQueued
+from app.schemas.audio_pipeline import AudioPipelineProgressRead
 from app.schemas.research_chunk import TextChunkRead
 from app.schemas.research_source import (
     RawTextNoteCreate,
@@ -25,10 +28,20 @@ from app.schemas.research_source import (
     SourceAudioRead,
     SourceDocumentDetailRead,
     SourceDocumentRead,
+    TranscriptPromoteRequest,
+    TranscriptPromoteResponse,
     UnifiedSourcesResponse,
 )
+from app.repositories.research_batch_repository import ResearchBatchRepository
+from app.services.audio_pipeline_progress_service import build_audio_progress
+from app.services.transcript_export_service import (
+    build_transcript_docx_bytes,
+    build_transcript_txt_bytes,
+    safe_export_stem,
+)
+from app.workers.tasks.audio_segment_pipeline import transcribe_full_audio_gemini_fast
 from app.workers.tasks.research_extraction import extract_entities_for_document
-from app.workers.tasks.research_processing import chunk_source_document, transcribe_audio_source
+from app.workers.tasks.research_processing import chunk_source_document
 
 router_nested = APIRouter(
     prefix="/projects/{project_id}/sources",
@@ -77,7 +90,7 @@ async def upload_text_source(
     except ValueError as e:
         if str(e) == "project_not_found":
             raise _project_404() from e
-        raise
+        raise http_exception_for_ingestion_value_error(e) from e
     return SourceDocumentRead.model_validate(doc)
 
 
@@ -125,14 +138,30 @@ async def upload_text_sources_bulk(
                 )
             )
             continue
-        doc = await ingestion.upload_text_file(
-            project_id,
-            filename=filename,
-            content=data,
-            mime_type=file.content_type,
-            source_type=source_type,
-            extra_metadata={"bulk_upload": True, "original_filename": filename},
-        )
+        try:
+            doc = await ingestion.upload_text_file(
+                project_id,
+                filename=filename,
+                content=data,
+                mime_type=file.content_type,
+                source_type=source_type,
+                extra_metadata={"bulk_upload": True, "original_filename": filename},
+            )
+        except ValueError as e:
+            if str(e) == "project_not_found":
+                raise _project_404() from e
+            http_exc = http_exception_for_ingestion_value_error(e)
+            detail = http_exc.detail if isinstance(http_exc.detail, dict) else {}
+            items.append(
+                BulkUploadItemResult(
+                    filename=filename,
+                    status="error",
+                    source_kind="document",
+                    error_code=str(detail.get("code") or http_exc.status_code),
+                    error_message=str(detail.get("message") or http_exc.detail),
+                )
+            )
+            continue
         items.append(
             BulkUploadItemResult(
                 filename=filename,
@@ -372,7 +401,7 @@ async def queue_transcribe_audio(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "source_audio_not_found", "message": "Source audio not found"},
         )
-    task = transcribe_audio_source.delay(str(source_audio_id))
+    task = transcribe_full_audio_gemini_fast.delay(str(source_audio_id))
     return ProcessingTaskQueued(task_id=str(task.id), status="queued")
 
 
@@ -439,3 +468,139 @@ async def queue_extract_document(
         )
     task = extract_entities_for_document.delay(str(source_document_id))
     return ProcessingTaskQueued(task_id=str(task.id), status="queued")
+
+
+@router_detail.get(
+    "/audios/{source_audio_id}/progress",
+    response_model=AudioPipelineProgressRead,
+    responses={404: {"model": ErrorResponse}},
+)
+async def get_source_audio_progress(
+    source_audio_id: UUID,
+    session: DbSession,
+) -> AudioPipelineProgressRead:
+    audio = await session.get(SourceAudio, source_audio_id)
+    if audio is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "source_audio_not_found", "message": "Source audio not found"},
+        )
+    prog = await build_audio_progress(session, source_audio_id)
+    if prog is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "source_audio_not_found", "message": "Source audio not found"},
+        )
+    return prog
+
+
+@router_detail.get(
+    "/audios/{source_audio_id}/transcript/export",
+    responses={404: {"model": ErrorResponse}},
+)
+async def export_audio_transcript(
+    source_audio_id: UUID,
+    session: DbSession,
+    export_format: Literal["txt", "docx"] = Query("txt", alias="format"),
+) -> Response:
+    audio = await session.get(SourceAudio, source_audio_id)
+    if audio is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "source_audio_not_found", "message": "Source audio not found"},
+        )
+    stmt = (
+        select(Transcript)
+        .where(
+            Transcript.source_audio_id == source_audio_id,
+            Transcript.status == JobStatus.COMPLETED,
+        )
+        .order_by(Transcript.updated_at.desc())
+        .limit(1)
+    )
+    tr = await session.scalar(stmt)
+    if tr is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "transcript_not_found", "message": "No completed transcript for this audio"},
+        )
+    stem = safe_export_stem(audio.filename or "transcript")
+    if export_format == "txt":
+        payload = build_transcript_txt_bytes(tr.full_text)
+        return Response(
+            content=payload,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.txt"'},
+        )
+    payload = build_transcript_docx_bytes(title=stem, full_text=tr.full_text)
+    return Response(
+        content=payload,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.docx"'},
+    )
+
+
+@router_detail.post(
+    "/audios/{source_audio_id}/transcript/promote",
+    response_model=TranscriptPromoteResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={404: {"model": ErrorResponse}},
+)
+async def promote_audio_transcript_to_document(
+    source_audio_id: UUID,
+    body: TranscriptPromoteRequest,
+    session: DbSession,
+    ingestion: IngestionServiceDep,
+) -> TranscriptPromoteResponse:
+    audio = await session.get(SourceAudio, source_audio_id)
+    if audio is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "source_audio_not_found", "message": "Source audio not found"},
+        )
+    if body.target_project_id != audio.project_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "project_mismatch",
+                "message": "target_project_id must match the audio's project",
+            },
+        )
+    stmt = (
+        select(Transcript)
+        .where(
+            Transcript.source_audio_id == source_audio_id,
+            Transcript.status == JobStatus.COMPLETED,
+        )
+        .order_by(Transcript.updated_at.desc())
+        .limit(1)
+    )
+    tr = await session.scalar(stmt)
+    if tr is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "transcript_not_found", "message": "No completed transcript for this audio"},
+        )
+    stem = safe_export_stem(body.filename_stem)
+    meta = {
+        "promoted_from_audio_id": str(source_audio_id),
+        "promoted_from_transcript_id": str(tr.id),
+    }
+    doc = await ingestion.create_raw_text_note(
+        body.target_project_id,
+        title_or_filename=f"{stem}.txt",
+        raw_text=tr.full_text,
+        source_type=SourceType.IMPORT,
+        extra_metadata=meta,
+    )
+    if body.research_batch_id is not None:
+        repo = ResearchBatchRepository(session)
+        batch = await repo.get(body.research_batch_id)
+        if batch is None or batch.project_id != body.target_project_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "batch_not_found", "message": "Batch not found for this project"},
+            )
+        await repo.add_document(batch.id, doc.id)
+        await session.commit()
+    return TranscriptPromoteResponse(source_document_id=doc.id)

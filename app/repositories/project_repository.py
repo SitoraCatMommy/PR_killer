@@ -3,6 +3,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.research_languages import normalize_output_language
 from app.models.project import Project
 
 
@@ -18,8 +19,15 @@ class ProjectRepository:
     async def get_by_id(self, project_id: UUID) -> Project | None:
         return await self._session.get(Project, project_id)
 
-    async def create(self, *, name: str, description: str | None) -> Project:
-        p = Project(name=name, description=description)
+    async def create(
+        self,
+        *,
+        name: str,
+        description: str | None,
+        output_language: str | None = None,
+    ) -> Project:
+        lang = normalize_output_language(output_language or "ru", default="ru")
+        p = Project(name=name, description=description, output_language=lang)
         self._session.add(p)
         await self._session.flush()
         return p

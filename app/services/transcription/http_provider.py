@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings
 from app.services.transcription.data import StructuredTranscriptionResult, TranscriptSegmentData
 
@@ -29,7 +30,10 @@ class HttpTranscriptionProvider:
         headers: dict[str, str] = {}
         if self._settings.transcription_api_key:
             headers["Authorization"] = f"Bearer {self._settings.transcription_api_key}"
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        read_s = max(120.0, float(self._settings.openai_http_timeout_seconds))
+        async with httpx.AsyncClient(
+            timeout=httpx_timeout_for_upstream_read(read_seconds=read_s, connect_seconds=60.0),
+        ) as client:
             files = {"file": (filename_hint or "audio", audio_bytes, mime_type or "application/octet-stream")}
             r = await client.post(
                 str(self._settings.transcription_api_url),

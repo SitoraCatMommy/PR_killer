@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from app.domain.enums import EntityType
 from app.domain.research_units import LEGACY_ENTITY_TYPES, PRIMARY_RESEARCH_ENTITY_TYPES
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings, get_settings
 from app.schemas.research_extraction import ExtractedEntityCandidate
 
@@ -74,7 +75,12 @@ class GPTExtractionProvider:
         if not key:
             raise ValueError("openai_api_key_missing")
         self._model = self._settings.openai_extraction_model
-        self._client = OpenAI(api_key=key, timeout=120.0)
+        self._client = OpenAI(
+            api_key=key,
+            timeout=httpx_timeout_for_upstream_read(
+                read_seconds=float(self._settings.openai_http_timeout_seconds),
+            ),
+        )
 
     def _parse_entities_loose(self, data: Any) -> list[dict[str, Any]]:
         if not isinstance(data, dict):

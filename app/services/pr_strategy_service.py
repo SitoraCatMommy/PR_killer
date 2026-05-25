@@ -10,6 +10,7 @@ from typing import Any
 from openai import OpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.infrastructure.llm_http import httpx_timeout_for_upstream_read
 from app.infrastructure.settings import Settings, get_settings
 from app.models.research_batch import ResearchBatch
 from app.services.audience_portrait_service import build_portrait_context, run_portrait_generation_sync
@@ -68,7 +69,9 @@ def _system_prompt(output_language: str) -> str:
     return (
         "Ты senior PR-стратег. Сформируй готовую PR-стратегию строго на основе audience_portrait и "
         "research_evidence (темы, риски, проблемы, паттерны, инсайты, цитаты). Запрещены общие фразы без "
-        "опоры на данные. Каждый пункт должен быть применимым на практике. Язык: русский. "
+        "опоры на данные. Пиши как человек-аналитик: объясняй, что именно слышно в интервью и почему это "
+        "важно для коммуникации; избегай канцелярита, голых списков label-ов и механических пересказов метрик. "
+        "Каждый пункт должен быть применимым на практике. Язык: русский. "
         "Верни один JSON-объект с ключами из user-сообщения."
     )
 
@@ -99,13 +102,15 @@ def _user_payload(
             ),
             "alerts": (
                 "array of 3–8 objects {type, message, severity} — type one of risk | sentiment | trust; "
-                "severity one of high | medium; message short, grounded in frequencies"
+                "severity one of high | medium; message short, grounded in frequencies and at least one respondent quote "
+                "when quote_backed_insights/quotes are present"
             ),
         },
         "rules": [
             "Output JSON MUST contain only action_cards and alerts (plus optional brand_perception_summary one sentence <= 280 chars).",
             "No paragraphs: action_cards are the sole strategy output.",
             "If segment_filter is set, bias for_segment toward that slice.",
+            "Prefer research_evidence.quote_backed_insights over naked top_insights labels when explaining why an action matters.",
             "Do not invent statistics — tie message lines to evidence_refs snippets.",
         ],
     }
@@ -175,7 +180,8 @@ def _generate_pr_strategy_sync(user_message: str, output_language: str, settings
     key = (settings.openai_api_key or "").strip()
     if not key:
         raise ValueError("openai_api_key_missing")
-    client = OpenAI(api_key=key, timeout=180.0)
+    read_s = max(180.0, float(settings.openai_http_timeout_seconds))
+    client = OpenAI(api_key=key, timeout=httpx_timeout_for_upstream_read(read_seconds=read_s))
     completion = client.chat.completions.create(
         model=settings.openai_report_model,
         messages=[
@@ -304,9 +310,15 @@ async def generate_pr_strategy(
         "risks_bar": ctx.get("risks_bar"),
         "top_patterns": ctx.get("top_patterns"),
         "top_insights": ctx.get("top_insights"),
+        "interview_evidence_summaries": (ctx.get("interview_evidence_summaries") or [])[:24],
+        "quote_backed_insights": [
+            x
+            for x in (ctx.get("pr_insight_rollups") or [])[:18]
+            if isinstance(x, dict) and (x.get("quotes") or [])
+        ],
         "word_frequency": ctx.get("word_frequency"),
         "sentiment": ctx.get("sentiment"),
-        "quotes": (ctx.get("quotes") or [])[:20],
+        "quotes": (ctx.get("quotes") or [])[:32],
     }
 
     user_msg = _user_payload(

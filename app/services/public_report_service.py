@@ -7,40 +7,35 @@ from app.infrastructure.settings import Settings, get_settings
 from app.models.research_batch import ResearchBatch
 from app.models.project import Project
 from app.schemas.research_batch import FullReportResponse, PublicReportResponse
-from app.services.batch_cached_llm_service import build_full_report_response
+from app.services.project_cached_llm_service import build_project_full_report_response
 from app.services.report_narrative_service import markdown_from_sections, narrative_sections_from_full_report
-from app.services.research_batch_dashboard_service import build_batch_dashboard
+from app.services.research_batch_dashboard_service import build_project_dashboard
 
 
-async def build_public_report_for_batch(
+async def build_public_report_for_project(
     session: AsyncSession,
-    batch: ResearchBatch,
+    project: Project,
     *,
     full: FullReportResponse | None = None,
     recalculate: bool = False,
     settings: Settings | None = None,
 ) -> PublicReportResponse:
     st = settings or get_settings()
-    proj = await session.get(Project, batch.project_id)
-    b_lang = getattr(batch, "output_language", None)
-    if b_lang and str(b_lang).strip():
-        lang = normalize_output_language(str(b_lang), default="ru")
-    else:
-        lang = normalize_output_language(proj.output_language if proj else None, default="ru")
+    lang = normalize_output_language(getattr(project, "output_language", None), default="ru")
 
     report = full
     if report is None:
-        report = await build_full_report_response(
+        report = await build_project_full_report_response(
             session,
-            batch,
+            project.id,
             output_language=lang,
             recalculate=recalculate,
             settings=st,
         )
 
     sections = narrative_sections_from_full_report(report, lang=lang)
-    md = markdown_from_sections(batch.name, sections)
-    dash = await build_batch_dashboard(session, batch, group_by=None)
+    md = markdown_from_sections(project.name or "Project", sections)
+    dash = await build_project_dashboard(session, project.id, group_by=None)
     ed = dash.get("evidence_dashboard") or {}
     appendix = {
         "traceability_rows": (ed.get("traceability") or {}).get("rows", [])[:50],
@@ -70,8 +65,8 @@ async def build_public_report_for_batch(
         },
     }
     return PublicReportResponse(
-        batch_id=batch.id,
-        batch_name=batch.name,
+        batch_id=project.id,
+        batch_name=project.name or "Project",
         executive_summary=report.executive_summary,
         sections=sections,
         risks=report.risks,
@@ -82,10 +77,31 @@ async def build_public_report_for_batch(
         sample_quotes=report.sample_quotes,
         narrative_markdown=md,
         meta={
-            "batch_id": str(batch.id),
-            "project_id": str(batch.project_id),
+            "project_id": str(project.id),
+            "batch_id": str(project.id),
             "language": lang,
         },
         dashboard_snapshot=snapshot,
         evidence_appendix=appendix,
+    )
+
+
+async def build_public_report_for_batch(
+    session: AsyncSession,
+    batch: ResearchBatch,
+    *,
+    full: FullReportResponse | None = None,
+    recalculate: bool = False,
+    settings: Settings | None = None,
+) -> PublicReportResponse:
+    """Legacy batch entrypoint — resolves project and delegates to project-wide report."""
+    proj = await session.get(Project, batch.project_id)
+    if proj is None:
+        raise ValueError("project_not_found")
+    return await build_public_report_for_project(
+        session,
+        proj,
+        full=full,
+        recalculate=recalculate,
+        settings=settings,
     )
